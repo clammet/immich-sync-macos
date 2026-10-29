@@ -1,0 +1,6 @@
+// Copy this file to Local.xcconfig and enter your Apple Developer team.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+// Use unique identifiers registered to your team, with an App Group shared by both targets.
+IMMICH_BUNDLE_PREFIX = com.yourname.immichsync
+IMMICH_APP_GROUP = group.com.yourname.immichsync
+IMMICH_KEYCHAIN_GROUP = com.yourname.immichsync.shared

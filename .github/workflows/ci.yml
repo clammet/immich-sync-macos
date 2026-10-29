@@ -1,0 +1,17 @@
+name: macOS checks
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test Swift targets
+        run: |
+          swift build --build-system native
+          swift test --build-system native
+      - name: Validate bundled application and extension
+        run: xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Check generated project is current
+        run: |
+          python3 scripts/generate-project.py
+          git diff --exit-code -- ImmichSync.xcodeproj

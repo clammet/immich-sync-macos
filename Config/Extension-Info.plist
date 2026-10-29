@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleName</key><string>Immich File Provider</string>
+    <key>CFBundleDisplayName</key><string>Immich</string>
+    <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundlePackageType</key><string>XPC!</string>
+    <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleSymbolName</key><string>photo.stack</string>
+    <key>ImmichAppGroup</key><string>$(IMMICH_APP_GROUP)</string>
+    <key>ImmichKeychainGroup</key><string>$(AppIdentifierPrefix)$(IMMICH_KEYCHAIN_GROUP)</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Immich downloads and uploads your photos and videos on your local server.</string>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>UTExportedTypeDeclarations</key><array><dict>
+        <key>UTTypeIdentifier</key><string>app.immich.sync.badge.ignored</string>
+        <key>UTTypeConformsTo</key><array><string>com.apple.icon-decoration.badge</string></array>
+        <key>UTTypeDescription</key><string>Not supported by Immich — stored only on this Mac</string>
+        <key>UTTypeIconFile</key><string>IgnoredBadge.icns</string>
+    </dict></array>
+    <key>NSExtension</key><dict>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.fileprovider-nonui</string>
+        <key>NSExtensionPrincipalClass</key><string>ImmichFileProviderExtension</string>
+        <key>NSExtensionFileProviderDocumentGroup</key><string>$(IMMICH_APP_GROUP)</string>
+        <key>NSExtensionFileProviderSupportsEnumeration</key><true/>
+        <key>NSExtensionFileProviderAllowsUserControlledEviction</key><true/>
+        <key>NSExtensionFileProviderDownloadPipelineDepth</key><integer>4</integer>
+        <key>NSExtensionFileProviderUploadPipelineDepth</key><integer>2</integer>
+        <key>NSExtensionFileProviderMetadataOnlyUploadPipelineDepth</key><integer>2</integer>
+        <key>NSFileProviderDecorations</key><array><dict>
+            <key>Identifier</key><string>app.immich.sync.ignored</string>
+            <key>BadgeImageType</key><string>app.immich.sync.badge.ignored</string>
+            <key>Category</key><string>Badge</string>
+            <key>Label</key><dict><key>NSStringFormat</key><string>Not supported by Immich — stored only on this Mac</string></dict>
+        </dict></array>
+        <key>NSExtensionFileProviderActions</key><array>
+            <dict>
+                <key>NSExtensionFileProviderActionIdentifier</key><string>app.immich.sync.keep</string>
+                <key>NSExtensionFileProviderActionName</key><string>Always keep available</string>
+                <key>NSExtensionFileProviderActionActivationRule</key><string>fileproviderItems.@count &gt; 0</string>
+            </dict>
+            <dict>
+                <key>NSExtensionFileProviderActionIdentifier</key><string>app.immich.sync.automatic</string>
+                <key>NSExtensionFileProviderActionName</key><string>Make available on demand</string>
+                <key>NSExtensionFileProviderActionActivationRule</key><string>fileproviderItems.@count &gt; 0</string>
+            </dict>
+            <dict>
+                <key>NSExtensionFileProviderActionIdentifier</key><string>app.immich.sync.inherit</string>
+                <key>NSExtensionFileProviderActionName</key><string>Use parent folder availability</string>
+                <key>NSExtensionFileProviderActionActivationRule</key><string>fileproviderItems.@count &gt; 0</string>
+            </dict>
+        </array>
+    </dict>
+</dict></plist>
