@@ -11,6 +11,12 @@
 			"path" = "Config/Base.xcconfig";
 			"sourceTree" = "SOURCE_ROOT";
 		};
+		"F834DDFE643DAF6A79D613AC" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/ImmichSyncApp/BrowserSignIn.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
 		"B1D4DE47BD7B23328E6B889F" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -200,6 +206,10 @@
 			"isa" = "PBXBuildFile";
 			"productRef" = "E06E3784738A751BBE55687A";
 		};
+		"8FCED4268457A0A0CBAFCD41" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F834DDFE643DAF6A79D613AC";
+		};
 		"51A133334C1AE57694ED3099" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "B1D4DE47BD7B23328E6B889F";
@@ -208,6 +218,7 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"8FCED4268457A0A0CBAFCD41",
 				"51A133334C1AE57694ED3099",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
@@ -342,6 +353,7 @@
 			"isa" = "PBXGroup";
 			"name" = "Sources";
 			"children" = (
+				"F834DDFE643DAF6A79D613AC",
 				"B1D4DE47BD7B23328E6B889F",
 				"9A0A5F26579B9844E89BEC72",
 				"EA4D78EFCFA9D956B8C092F2",

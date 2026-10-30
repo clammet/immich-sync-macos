@@ -10,37 +10,37 @@ public enum SharedStore {
         }
     }
     public static func account() throws -> Account? {
-        let file = try directory.appendingPathComponent("account.json")
+        let file = try directory.appendingPathComponent("session-account.json")
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
         return try JSONDecoder().decode(Account.self, from: Data(contentsOf: file))
     }
     public static func save(_ account: Account) throws {
         let folder = try directory
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try JSONEncoder().encode(account).write(to: folder.appendingPathComponent("account.json"), options: .atomic)
+        try JSONEncoder().encode(account).write(to: folder.appendingPathComponent("session-account.json"), options: .atomic)
     }
     public static func clearAccount() throws {
-        try FileManager.default.removeItem(at: directory.appendingPathComponent("account.json"))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("session-account.json"))
     }
     public static func catalogURL(accountID: String) throws -> URL {
         // Only identifiers created by this app may be used as path components.
         guard UUID(uuidString: accountID) != nil else { throw SyncError.missingAccount }
-        return try directory.appendingPathComponent(accountID, isDirectory: true).appendingPathComponent("catalog.sqlite")
+        return try directory.appendingPathComponent(accountID, isDirectory: true).appendingPathComponent("session-catalog.sqlite")
     }
 }
 
 public enum CredentialStore {
     private static var accessGroup: String? { Bundle.main.object(forInfoDictionaryKey: "ImmichKeychainGroup") as? String }
-    private static func query(_ accountID: String) -> [String: Any] {
+    private static func query(_ sessionID: String) -> [String: Any] {
         var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "app.immich.sync.api-key", kSecAttrAccount as String: accountID,
+            kSecAttrService as String: "app.immich.sync.session-token", kSecAttrAccount as String: sessionID,
             kSecUseDataProtectionKeychain as String: true]
         if let accessGroup, !accessGroup.isEmpty { query[kSecAttrAccessGroup as String] = accessGroup }
         return query
     }
-    public static func save(_ key: String, accountID: String) throws {
-        let query = query(accountID)
-        let attrs: [String: Any] = [kSecValueData as String: Data(key.utf8),
+    public static func save(_ token: String, sessionID: String) throws {
+        let query = query(sessionID)
+        let attrs: [String: Any] = [kSecValueData as String: Data(token.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
         if status == errSecItemNotFound {
@@ -48,29 +48,29 @@ public enum CredentialStore {
             guard added == errSecSuccess else { throw SyncError.keychain(added) }
         } else if status != errSecSuccess { throw SyncError.keychain(status) }
     }
-    public static func read(accountID: String) throws -> String {
-        var query = query(accountID)
+    public static func read(sessionID: String) throws -> String {
+        var query = query(sessionID)
         query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { throw SyncError.keychain(status) }
-        guard let bytes = result as? Data, let key = String(data: bytes, encoding: .utf8) else { throw SyncError.missingAccount }
-        return key
+        guard let bytes = result as? Data, let token = String(data: bytes, encoding: .utf8) else { throw SyncError.missingAccount }
+        return token
     }
-    public static func delete(accountID: String) throws {
-        let status = SecItemDelete(query(accountID) as CFDictionary)
+    public static func delete(sessionID: String) throws {
+        let status = SecItemDelete(query(sessionID) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw SyncError.keychain(status) }
     }
 }
 
 public struct SyncStatus: Codable, Sendable {
-    public var lastRefresh: Date?
+    public var lastSync: Date?
     public var assetCount: Int
     public var albumCount: Int
     public var message: String?
-    public var refreshing: Bool
-    public init(lastRefresh: Date? = nil, assetCount: Int = 0, albumCount: Int = 0, message: String? = nil, refreshing: Bool = false) {
-        self.lastRefresh = lastRefresh; self.assetCount = assetCount; self.albumCount = albumCount
-        self.message = message; self.refreshing = refreshing
+    public var syncing: Bool
+    public init(lastSync: Date? = nil, assetCount: Int = 0, albumCount: Int = 0, message: String? = nil, syncing: Bool = false) {
+        self.lastSync = lastSync; self.assetCount = assetCount; self.albumCount = albumCount
+        self.message = message; self.syncing = syncing
     }
 }

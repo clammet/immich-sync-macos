@@ -5,17 +5,16 @@ import ImmichCore
 @objc(ImmichFileProviderExtension)
 public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderCustomAction, NSFileProviderThumbnailing {
     private let domain: NSFileProviderDomain
-    private let contextResult: Result<ProviderContext, Error>
+    private var contextResult: Result<ProviderContext, Error> { Result { try ProviderRegistry.context(for: domain) } }
     public required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        contextResult = Result { try ProviderRegistry.context(for: domain) }
         super.init()
     }
     public func invalidate() { ProviderRegistry.invalidate(domain) }
 
     public func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
         guard containerItemIdentifier != .trashContainer else { throw NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError) }
-        do { return ProviderEnumerator(context: try contextResult.get(), container: containerItemIdentifier) }
+        do { _ = try contextResult.get(); return ProviderEnumerator(domain: domain, container: containerItemIdentifier) }
         catch { throw ProviderErrors.map(error) }
     }
 
@@ -33,8 +32,8 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         do {
             let context = try contextResult.get()
             let item = try context.item(context.engine.catalog.item(ProviderItem.id(identifier)))
-            context.requestRefresh(); completionHandler(item, nil)
-        } catch { completionHandler(nil, ProviderErrors.map(error)) }
+            context.requestSync(); completionHandler(item, nil)
+        } catch { completionHandler(nil, ProviderErrors.map(error, identifier: identifier)) }
         return Progress(totalUnitCount: 0)
     }
 
@@ -48,7 +47,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
             do {
                 let result = try await context.engine.download(id: ProviderItem.id(itemIdentifier), directory: context.manager.temporaryDirectoryURL(), progress: progress, requestedVersion: requestedVersion?.contentVersion)
                 completionHandler(result.0, try context.item(result.1), nil)
-            } catch { context.recordError(error); completionHandler(nil, nil, ProviderErrors.map(error)) }
+            } catch { context.recordError(error); completionHandler(nil, nil, ProviderErrors.map(error, identifier: itemIdentifier)) }
         }
     }
 
@@ -63,10 +62,9 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                 // Packages and symlinks are local-only, even if their names resemble media files.
                 guard itemTemplate.contentType == .folder || itemTemplate.contentType?.conforms(to: .data) == true,
                       itemTemplate.contentType != .symbolicLink, itemTemplate.contentType?.conforms(to: .package) != true else { throw SyncError.unsupported }
-                _ = try await context.engine.refresh()
                 let item = try await context.engine.create(parentID: ProviderItem.id(itemTemplate.parentItemIdentifier),
                     filename: itemTemplate.filename, directory: itemTemplate.contentType == .folder, contents: url, progress: progress)
-                context.signal([item.parentID]); completionHandler(try context.item(item), [], false, nil)
+                context.signal(); completionHandler(try context.item(item), [], false, nil)
             } catch { context.recordError(error); completionHandler(nil, [], false, ProviderErrors.map(error, newImport: true)) }
         }
     }
@@ -84,7 +82,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                     filename: changedFields.contains(.filename) ? item.filename : nil,
                     parentID: changedFields.contains(.parentItemIdentifier) ? ProviderItem.id(item.parentItemIdentifier) : nil,
                     contents: newContents, progress: progress)
-                context.signal([updated.parentID, ProviderItem.id(item.parentItemIdentifier)])
+                context.signal()
                 completionHandler(try context.item(updated), [], false, nil)
             } catch { context.recordError(error); completionHandler(nil, [], false, ProviderErrors.map(error)) }
         }
@@ -156,8 +154,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                     case "app.immich.sync.inherit": try context.engine.catalog.pin(id, value: nil)
                     default: throw SyncError.unsupported
                     }
-                    let record = try context.engine.catalog.item(id)
-                    context.signal([record.parentID])
+                    context.signal()
                 }
                 progress.completedUnitCount = 100; completionHandler(nil)
             } catch { completionHandler(ProviderErrors.map(error)) }

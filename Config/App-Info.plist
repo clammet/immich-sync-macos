@@ -9,6 +9,10 @@
     <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+    <key>CFBundleURLTypes</key><array><dict>
+        <key>CFBundleURLName</key><string>Immich Sync sign-in</string>
+        <key>CFBundleURLSchemes</key><array><string>immich-sync</string></array>
+    </dict></array>
     <key>LSUIElement</key><true/>
     <key>NSHumanReadableCopyright</key><string>Immich Sync contributors</string>
     <key>ImmichAppGroup</key><string>$(IMMICH_APP_GROUP)</string>

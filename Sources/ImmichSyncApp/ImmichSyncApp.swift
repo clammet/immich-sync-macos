@@ -31,6 +31,8 @@ struct ImmichSyncApp: App {
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var transferText: String?
     @Published var transferFraction: Double = 0
+    private let browser = BrowserSignIn()
+    private var statusCatalog: (accountID: String, catalog: Catalog)?
     private var monitor: Task<Void, Never>?
     private var lastSignal = Date.distantPast
 
@@ -40,7 +42,7 @@ struct ImmichSyncApp: App {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.readStatus()
-                if self.account != nil, self.account?.paused == false, Date().timeIntervalSince(self.lastSignal) >= 300 {
+                if self.account != nil, self.account?.paused == false, Date().timeIntervalSince(self.lastSignal) >= SyncContract.interval {
                     self.signal(force: false)
                 }
                 try? await Task.sleep(for: .seconds(3))
@@ -53,18 +55,23 @@ struct ImmichSyncApp: App {
         if account?.paused == true { return "Sync paused" }
         if error != nil || status.message != nil { return "Sync needs attention" }
         if transferText != nil { return "Syncing your library…" }
-        if status.refreshing { return "Checking your library…" }
-        return status.lastRefresh == nil ? "Connecting to Immich…" : "Library is up to date"
+        if status.syncing { return "Checking your library…" }
+        return status.lastSync == nil ? "Connecting to Immich…" : "Library is up to date"
     }
     var stateSymbol: String {
         if account?.paused == true { return "pause.circle.fill" }
         if error != nil || status.message != nil { return "exclamationmark.triangle.fill" }
-        return transferText != nil || status.refreshing || status.lastRefresh == nil ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill"
+        return transferText != nil || status.syncing || status.lastSync == nil ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill"
     }
     func readStatus() {
         guard let account else { return }
         do {
-            let catalog = try Catalog(url: SharedStore.catalogURL(accountID: account.id))
+            let catalog: Catalog
+            if let cached = statusCatalog, cached.accountID == account.id { catalog = cached.catalog }
+            else {
+                catalog = try Catalog(url: SharedStore.catalogURL(accountID: account.id))
+                statusCatalog = (account.id,catalog)
+            }
             status = try catalog.state("status", as: SyncStatus.self) ?? SyncStatus()
             transferText = nil
             if let manager = NSFileProviderManager(for: domain(for: account)) {
@@ -79,38 +86,69 @@ struct ImmichSyncApp: App {
             }
         } catch { self.error = error.localizedDescription }
     }
-    func connect(server: String, key: String, allowHTTP: Bool) async {
+    func signIn(server: String, email: String, password: String, allowHTTP: Bool) async {
+        await connect(server: server, allowHTTP: allowHTTP) { api in
+            try await api.login(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+        }
+    }
+    func signInWithBrowser(server: String, allowHTTP: Bool) async {
+        await connect(server: server, allowHTTP: allowHTTP) { api in
+            let challenge = try OAuthChallenge()
+            let url = try await api.authorizeOAuth(challenge)
+            let callback = try await self.browser.authenticate(url)
+            return try await api.finishOAuth(callback: callback, challenge: challenge)
+        }
+    }
+    private func connect(server: String, allowHTTP: Bool,
+                         authenticate: (ImmichAPI) async throws -> SessionLogin) async {
         busy = true; error = nil
         defer { busy = false }
+        var pending: ImmichAPI?
+        var pendingSessionID: String?
+        var adopted = false
         do {
             let address = try ServerAddress(server, allowHTTP: allowHTTP)
-            let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else { throw SyncError.missingAccount }
-            let provisional = Account(serverURL: address.apiURL, userID: "", displayName: "", serverMajor: 2, serverMinor: 5, allowHTTP: allowHTTP)
-            let api = ImmichAPI(account: provisional, apiKey: key)
-            async let fetchedVersion = api.version()
-            async let fetchedUser = api.currentUser()
-            let (version, user) = try await (fetchedVersion, fetchedUser)
-            guard version.major > 2 || (version.major == 2 && version.minor >= 5) else { throw SyncError.incompatibleServer }
-            if let existing = account, existing.serverURL != address.apiURL || existing.userID != user.id {
-                throw NSError(domain: "ImmichSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "Disconnect the current account before connecting a different server or user. Downloaded and unsynced files are kept when disconnecting."])
+            let publicAPI = ImmichAPI(serverURL: address.apiURL)
+            try await publicAPI.version().requireSupported()
+            let login = try await authenticate(publicAPI)
+            let authenticated = ImmichAPI(serverURL: address.apiURL, token: { login.accessToken })
+            pending = authenticated
+            guard !login.shouldChangePassword else { throw SyncError.passwordChangeRequired }
+            if let existing = account, existing.serverURL != address.apiURL || existing.userID != login.userId {
+                throw NSError(domain: "ImmichSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "Disconnect the current account before signing in to a different server or user."])
             }
-            var connected = Account(id: account?.id ?? UUID().uuidString, serverURL: address.apiURL, userID: user.id,
-                displayName: user.name, serverMajor: version.major, serverMinor: version.minor, allowHTTP: allowHTTP)
+            let sessionID = try await authenticated.currentSessionID()
+            pendingSessionID = sessionID
+            var connected = Account(id: account?.id ?? UUID().uuidString, serverURL: address.apiURL,
+                userID: login.userId, displayName: login.name, email: login.userEmail,
+                sessionID: sessionID, allowHTTP: allowHTTP)
             connected.paused = account?.paused ?? false
-            _ = try await api.mediaTypes()
-            try CredentialStore.save(key, accountID: connected.id)
+            let previous = account
+            try CredentialStore.save(login.accessToken, sessionID: sessionID)
             try SharedStore.save(connected)
-            // Keep recoverable configuration if domain registration fails; the user can retry setup.
-            account = connected
-            let domain = domain(for: connected)
+            account = connected; adopted = true
+            if let previous, let token = try? CredentialStore.read(sessionID: previous.sessionID) {
+                try? await ImmichAPI(serverURL: previous.serverURL, token: { token }).logout()
+                try? CredentialStore.delete(sessionID: previous.sessionID)
+            }
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                NSFileProviderManager.add(domain) { error in
+                NSFileProviderManager.add(domain(for: connected)) { error in
                     if let error { continuation.resume(throwing: error) } else { continuation.resume() }
                 }
             }
             signal(force: true)
-        } catch { self.error = error.localizedDescription }
+        } catch is CancellationError {
+            if !adopted {
+                try? await pending?.logout()
+                if let pendingSessionID { try? CredentialStore.delete(sessionID: pendingSessionID) }
+            }
+        } catch {
+            if !adopted {
+                try? await pending?.logout()
+                if let pendingSessionID { try? CredentialStore.delete(sessionID: pendingSessionID) }
+            }
+            self.error = error.localizedDescription
+        }
     }
     func domain(for account: Account) -> NSFileProviderDomain {
         NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(account.id), displayName: "Immich — \(account.displayName)")
@@ -120,7 +158,7 @@ struct ImmichSyncApp: App {
         lastSignal = Date()
         if force {
             error = nil
-            UserDefaults(suiteName: SharedStore.groupID)?.set(Date().timeIntervalSince1970, forKey: "refreshRequestedAt")
+            UserDefaults(suiteName: SharedStore.groupID)?.set(Date().timeIntervalSince1970, forKey: "syncRequestedAt")
         }
         guard let manager = NSFileProviderManager(for: domain(for: account)) else { return }
         if force {
@@ -129,7 +167,6 @@ struct ImmichSyncApp: App {
             }
         }
         manager.signalEnumerator(for: .workingSet) { _ in }
-        manager.signalEnumerator(for: .rootContainer) { _ in }
     }
     func togglePause() {
         guard var updated = account else { return }
@@ -167,9 +204,12 @@ struct ImmichSyncApp: App {
                     if let error { continuation.resume(throwing: error) } else { continuation.resume(returning: url) }
                 }
             }
-            try CredentialStore.delete(accountID: account.id)
+            if let token = try? CredentialStore.read(sessionID: account.sessionID) {
+                try? await ImmichAPI(serverURL: account.serverURL, token: { token }).logout()
+            }
+            try CredentialStore.delete(sessionID: account.sessionID)
             try SharedStore.clearAccount()
-            self.account = nil; status = SyncStatus(); error = nil
+            self.account = nil; statusCatalog = nil; status = SyncStatus(); error = nil
             if let keptURL { NSWorkspace.shared.activateFileViewerSelecting([keptURL]) }
         } catch { self.error = error.localizedDescription }
     }
@@ -198,7 +238,7 @@ private struct MenuPanel: View {
                         stat("\(model.status.assetCount.formatted())", label: "photos & videos")
                         stat("\(model.status.albumCount.formatted())", label: "albums")
                     }
-                    if let date = model.status.lastRefresh {
+                    if let date = model.status.lastSync {
                         Text("Last checked \(date.formatted(.relative(presentation: .named)))").font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
@@ -244,7 +284,8 @@ private struct MenuPanel: View {
 
 @MainActor private final class SetupFields: ObservableObject {
     @Published var server = ""
-    @Published var apiKey = ""
+    @Published var email = ""
+    @Published var password = ""
     @Published var allowHTTP = false
     @Published var confirmDisconnect = false
 }
@@ -266,17 +307,22 @@ private struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Server connection").font(.headline)
                         TextField("https://photos.example.com", text: $fields.server).textContentType(.URL)
-                        SecureField(model.account == nil ? "Immich API key" : "New or existing API key", text: $fields.apiKey)
+                        TextField("Email address", text: $fields.email).textContentType(.username)
+                        SecureField("Password", text: $fields.password).textContentType(.password)
                         Toggle("Allow HTTP on my trusted local network", isOn: $fields.allowHTTP).font(.caption)
-                        Text("Create an API key in Immich → Account settings → API keys. The key is stored in your login Keychain.")
+                        Text("Your session is stored in Keychain. Your password is never saved. This build connects to Immich \(SyncContract.serverVersion).")
                             .font(.caption).foregroundStyle(.secondary)
-                        DisclosureGroup("Required API key permissions") {
-                            Text("user.read, asset.read, asset.view, asset.download, asset.upload, asset.copy, asset.delete, album.read, album.create, album.update, album.delete, albumAsset.create, albumAsset.delete")
-                                .font(.caption.monospaced()).textSelection(.enabled).padding(.top, 4)
-                        }.font(.caption)
-                        Button(model.account == nil ? "Connect & add Finder location" : "Update connection") {
-                            Task { await model.connect(server: fields.server, key: fields.apiKey, allowHTTP: fields.allowHTTP); if model.error == nil { fields.apiKey = "" } }
-                        }.buttonStyle(.borderedProminent).tint(.indigo).disabled(model.busy || fields.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button(model.account == nil ? "Sign in & add Finder location" : "Sign in again") {
+                            Task {
+                                await model.signIn(server: fields.server, email: fields.email, password: fields.password, allowHTTP: fields.allowHTTP)
+                                fields.password = ""
+                            }
+                        }.buttonStyle(.borderedProminent).tint(.indigo)
+                            .disabled(model.busy || fields.email.isEmpty || fields.password.isEmpty || fields.server.isEmpty)
+                        Button("Sign in with browser") {
+                            Task { await model.signInWithBrowser(server: fields.server, allowHTTP: fields.allowHTTP) }
+                        }.disabled(model.busy || fields.server.isEmpty)
+                        Text("Browser sign-in uses your server’s OAuth provider.").font(.caption).foregroundStyle(.secondary)
                         if model.busy { ProgressView().controlSize(.small) }
                     }.textFieldStyle(.roundedBorder).frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 }
@@ -297,7 +343,7 @@ private struct SettingsView: View {
             }.padding(28)
         }
         .frame(width: 560, height: 700)
-        .onAppear { fields.server = model.account?.serverURL.absoluteString ?? ""; fields.allowHTTP = model.account?.allowHTTP ?? false }
+        .onAppear { fields.server = model.account?.serverURL.absoluteString ?? ""; fields.allowHTTP = model.account?.allowHTTP ?? false; fields.email = model.account?.email ?? "" }
         .confirmationDialog("Disconnect Immich? Downloaded and unsynced files will be kept on this Mac.", isPresented: $fields.confirmDisconnect) {
             Button("Disconnect", role: .destructive) { Task { await model.disconnect() } }
         }

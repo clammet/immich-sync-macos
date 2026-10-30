@@ -1,85 +1,87 @@
 # Immich Sync for macOS
 
-A native menu bar client that connects Immich to Finder using Apple's replicated File Provider framework. macOS manages placeholders, on-demand downloads, transfer status, and disk eviction. The app manages the Immich account and polls for remote changes.
+A native menu bar client connecting Immich to Finder through Apple's replicated File Provider framework. Sign in with your Immich account, browse online-only photos and videos, and use **Always keep available** to keep selected files or folders downloaded.
 
-This is an initial implementation for macOS 14+ and Immich 2.5+. The Swift app and extension compile independently of Xcode. A signed, provisioned app bundle is required to activate the Finder extension. Live-server and signed Finder integration testing are still required before release.
+This build targets **Immich 3.3.5 exactly**, using its native incremental synchronization protocol. It requires macOS 14 or later. Server upgrades require updating and validating the protocol contract. A provisioned, signed application is needed to activate the Finder extension; signed Finder and live-server validation remain release requirements.
 
-## Behavior
+## Sign in
 
-| Finder action | Immich behavior |
+Enter your server address and either sign in with email/password or choose **Sign in with browser** for your server's OAuth provider. Each sign-in creates a dedicated Immich session for this Mac. The session token is stored in shared Keychain; passwords are never saved. Expired or revoked sessions require signing in again.
+
+Browser sign-in uses PKCE and a random state value. Register this exact additional redirect URI in your identity provider's Immich OAuth client:
+
+```text
+immich-sync://oauth
+```
+
+The existing Immich OAuth server configuration is used. Browser sign-in requires OAuth to be enabled on the server. Password sign-in requires password login to be enabled. No server plugin is required.
+
+HTTPS is the default. HTTP requires explicit opt-in for a trusted local server and remains subject to macOS transport security. Server addresses may include reverse-proxy subpaths and a trailing `api` component.
+
+## Synchronization
+
+The extension streams assets, EXIF sizes, albums, album users, and album membership changes through Immich's `sync/stream` endpoint. An initial bootstrap populates the local catalog. Subsequent requests receive changes since acknowledged checkpoints.
+
+Each bounded batch commits its data and acknowledgement outbox in one SQLite transaction. Acknowledgements are sent only after that commit. Interrupted transfers resume from committed checkpoints, and lost acknowledgement responses are retried before the next stream. A server-requested reset builds a replacement generation while keeping the visible library available, then publishes the replacement after a valid completion record.
+
+The menu bar app requests a change check every minute. **Sync now** checks immediately. An idle check does not enumerate the library or album contents. Local uploads, edits, and album changes update affected catalog records directly; they do not request a full-library refresh. Finder requests can also trigger an incremental check. Keep the menu bar app running for periodic checks.
+
+## Finder behavior
+
+| Action | Behavior |
 | --- | --- |
-| Open a photo or video | Download and verify the original; macOS caches it |
-| Always keep available | Persist an eager download policy; folders pass it to their children |
-| Make available on demand | Allow macOS to evict downloaded media; use Finder's Remove Download to reclaim space |
-| Add media to All Photos | Upload to the authenticated user's library |
+| Open a photo or video | Download and verify the original; macOS manages its cached content |
+| Browse thumbnails | Fetch server derivatives without downloading originals |
+| Always keep available | Persist an eager download policy; children inherit folder availability |
+| Make available on demand | Allow eviction; use Finder's Remove Download to reclaim space |
+| Add media to All Photos | Upload to your Immich library |
 | Create or rename a folder directly inside Albums | Create or rename an Immich album |
-| Add media to an album folder | Upload or deduplicate the media and add album membership |
-| Move media between albums | Add the destination membership, then remove the source membership |
-| Delete media from an album | Remove that album membership; keep the original |
-| Delete an album | Delete the album; keep its original media |
+| Add media to an album | Upload/deduplicate the media and add its membership |
+| Move media between albums | Add the destination membership before removing the source |
+| Delete media from an album | Remove membership and keep the original |
+| Delete an album | Remove the album and keep its original media |
 | Delete media from All Photos | Move the original to Immich trash, affecting all album appearances |
-| Edit an original | Upload and verify a new asset, copy album associations and favorite/sidecar data, then trash the old original |
-| Add an unsupported file | Keep it on this Mac with a grey ignored overlay and an accessible explanation; never upload it |
-| Create nested folders | Keep them and their contents locally with the ignored overlay; Immich does not support nested albums |
+| Edit an original | Upload and verify a new asset, copy associations, then trash the old original |
+| Add an unsupported file or nested folder | Retain it locally with a grey ignored overlay; do not upload it |
 
-**Unsupported files are not backed up to Immich.** They have a durable local copy in the shared application container, remain marked as not uploaded, and cannot be evicted. A local-only file moved or renamed into a supported media type/location is reevaluated for upload. Packages and symbolic links use the system's native exclusion mechanism instead of being traversed.
+**Ignored items are stored only on this Mac and are not backed up to Immich.** Their content has a durable backing copy, is marked as not uploaded, and cannot be evicted. If a remote album disappears, its local-only children remain reachable under All Photos. Packages and symlinks use the system's exclusion mechanism instead of being traversed.
 
-All Photos and Albums are two views of the same assets. A file appearing in several albums represents the same original. Stable remote identity suffixes prevent filename collisions on case-insensitive filesystems. Original media filename renaming is unavailable because the current public Immich API does not support it. External-library assets are read-only; shared accounts' assets and locked assets are excluded.
+All Photos and Albums are views of the same originals. An asset in multiple albums has a separate Finder appearance in each. Stable identity suffixes prevent filename collisions on case-insensitive filesystems. Immich's current API does not support renaming original media filenames. External-library originals are read-only; other users' and locked assets are excluded.
 
-Immich trash must be enabled with a positive retention period for edits and library deletions. The client never sends force-delete requests. Recoverability still follows the server's retention settings. Immich has no conditional-write/delete transaction: the client checks versions before writing, preserves a conflicting local edit, and uses a persistent journal to recover interrupted edit sequences. Cross-client changes during the final server request remain a server-side race.
+Edits and library deletions require Immich trash with a positive retention period. The client never requests force deletion. Recovery follows server retention settings. An edit journal handles interrupted upload/copy/trash sequences, and source hashes are checked before retiring originals. Immich does not provide atomic conditional deletion, so a final cross-client race remains possible.
 
 ## Build and run
 
-1. Install full Xcode with the macOS SDK. Open `ImmichSync.xcodeproj`.
-2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. Set your development team and unique bundle, App Group, and shared Keychain identifiers.
-3. Register the application and extension identifiers with the same team. Enable the shared App Group for **both** targets and include the shared Keychain access group in their provisioning. Keep the sandbox and outgoing network entitlements enabled.
-4. Select the ImmichSync scheme and build. For local development, use an Apple Development identity with matching provisioning. Distribution needs Developer ID signing, provisioning where required, hardened runtime, and notarization.
-5. Install the built app in Applications and launch it. Enable the File Provider extension in System Settings if macOS requests it. Open the photo-stack menu bar item and choose Connect to Immich.
-6. Enter the server address and a dedicated API key. A trailing `api` path is accepted, and reverse-proxy subpaths are preserved. HTTPS is the default. HTTP requires explicit opt-in for a trusted local server and remains subject to macOS transport security.
+1. Install full Xcode with macOS support and select it as the active developer toolchain.
+2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. Configure your development team and unique bundle, shared App Group, and shared Keychain identifiers.
+3. Enable the same App Group and Keychain access group for the app and extension in their provisioning. Keep the sandbox and outgoing network entitlements enabled.
+4. Build the ImmichSync scheme in `ImmichSync.xcodeproj`. Local development uses Apple Development signing; distribution requires appropriate Developer ID signing and notarization.
+5. Install the built app in Applications, launch it, and enable the extension in System Settings if macOS requests it. Use the photo-stack menu bar item to sign in and open Finder.
 
-Grant the key these permissions:
-
-```text
-user.read
-asset.read
-asset.view
-asset.download
-asset.upload
-asset.copy
-asset.delete
-album.read
-album.create
-album.update
-album.delete
-albumAsset.create
-albumAsset.delete
-```
-
-No admin, permanent-deletion, or `all` permission is required. Keys are shared between the app and extension through Keychain; the account file contains no credential. Account switching requires disconnecting the previous account first. Disconnect uses Apple's mode that preserves downloaded and unsynced data, and reveals the retained location in Finder.
-
-Keep the menu bar app running for periodic remote updates. It signals the working set every five minutes; Sync now requests an immediate refresh. Finder requests also refresh stale metadata. On-demand operations run in the extension even when the menu bar app has quit. Pause prevents new sync work; an operation already in flight may finish.
-
-## Development
+Command-line checks:
 
 ```sh
-swift build --build-system native
-swift test --build-system native
+swift build
+swift test
 python3 scripts/generate-project.py
 ```
 
-The native SwiftPM build mode also supports command-line-tool installations. On newer SwiftPM releases it may be deprecated; the default build mode can be used with a complete Xcode installation. XCTest requires Xcode's test libraries.
+Complete Xcode provides XCTest and the application bundle build. These checks run entirely from the command line once Xcode's first-launch setup is complete.
 
-`sh scripts/check.sh` runs the package checks and validates project metadata. The Xcode project is committed and generated deterministically without a third-party project generator. After changing app or extension source filenames, regenerate it. `scripts/generate-badge.swift` draws the checked-in Finder badge using native vector drawing. GitHub Actions builds the unsigned app bundle and runs the test suite.
+`sh scripts/check.sh` validates the package and project metadata. The Xcode project is generated deterministically without third-party tooling; regenerate it after adding or renaming app/extension sources. GitHub Actions builds the unsigned application bundle and runs the standard XCTest suite.
 
-The tests cover API pagination and parsing, binary multipart uploads, filename safety, durable sync anchors, snapshot consistency, local-only file retention, availability policies, deletion semantics, edit ordering, conflict protection, and retry recovery. See [the architecture notes](docs/architecture.md) for the design decisions and primary research sources, and [the integration checklist](docs/integration-testing.md) for validation that needs a signed app and a test server.
+See [architecture and pinned protocol sources](docs/architecture.md) and the [signed integration checklist](docs/integration-testing.md).
 
-## Current limits
+## Scope
 
-- One account and internal-volume domains. Empty local-only folders are not represented on the server.
-- Public API-key endpoints are used instead of the session-only mobile sync stream. Refreshes currently enumerate the full library and album memberships, with bounded paging and connection concurrency. Very large libraries need an incremental server adapter before this should be deployed widely.
-- The catalog's change journal is persistent. Each album appearance has a distinct provider identity, so keeping multiple appearances offline can consume additional disk space.
-- Filename changes, arbitrary directory trees, Finder tags, resource forks, Live Photo pairing during new imports, and propagation of Immich's non-destructive edit recipes are not supported. Original downloads remain byte-for-byte originals. Export edited media from Immich when you want its rendered edits.
-- A content edit creates a new Immich asset ID. Faces, share links, stacks, and other relationships beyond those explicitly copied are not transferred. The old asset remains subject to Immich's trash retention.
-- The native ignored overlay, signed extension lifecycle, and Finder behavior have not yet been verified on a provisioned build. This repository does not contain a signed/notarized installer.
+- One account and a default File Provider location on the Mac's home volume.
+- Flat Immich albums; arbitrary nested folders remain local-only.
+- Original content and the selected native metadata streams. Finder tags, resource forks, new Live Photo pairing, and rendered non-destructive Immich edits are not synchronized.
+- Content edits create a new Immich asset ID. Album associations and supported copy fields are preserved; faces, share links, and stacks are not transferred.
+- Offline availability is per Finder appearance; keeping several appearances downloaded can consume additional disk space.
+- Disconnect preserves downloaded and unsynced data, forgets the local token, and attempts to revoke this Mac's session. Remote session management remains available in Immich.
+- This is a development build. Signed extension lifecycle, Finder decorations, OAuth against a configured provider, and live-server behavior still need integration validation.
+
+Development installs require a fresh sign-in. The session account, token service, and native catalog are separate storage formats, with no migration of earlier development data. Disconnect the earlier development build before installing this one so macOS can preserve any downloaded or unsynced files.
 
 This project is an independent Immich client.

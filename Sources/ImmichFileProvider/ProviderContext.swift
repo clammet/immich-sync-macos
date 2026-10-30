@@ -5,44 +5,43 @@ import ImmichCore
 final class ProviderContext: @unchecked Sendable {
     let engine: SyncEngine
     let manager: NSFileProviderManager
+    let sessionID: String
     private let lock = NSLock()
-    private var refreshing = false
+    private var job: Task<Void, Never>?
+    private var invalidated = false
 
-    init(domain: NSFileProviderDomain) throws {
-        guard let account = try SharedStore.account(), account.id == domain.identifier.rawValue,
-              let manager = NSFileProviderManager(for: domain) else { throw SyncError.missingAccount }
-        self.manager = manager
-        let key = try CredentialStore.read(accountID: account.id)
+    init(domain: NSFileProviderDomain, account: Account) throws {
+        guard account.id == domain.identifier.rawValue, let manager = NSFileProviderManager(for: domain) else { throw SyncError.missingAccount }
+        self.manager = manager; sessionID = account.sessionID
         let catalog = try Catalog(url: SharedStore.catalogURL(accountID: account.id))
-        if try catalog.all().isEmpty {
-            try catalog.replace(with: ItemRecord.records(from: RemoteSnapshot(assets: [], albums: [], memberships: [:], mediaTypes: MediaTypes(image: [], video: []))))
-        }
-        engine = SyncEngine(catalog: catalog, remote: ImmichAPI(account: account, apiKey: key, keyProvider: {
-            try CredentialStore.read(accountID: account.id)
-        }), checkRunning: {
-            guard let current = try SharedStore.account(), current.id == account.id else { throw SyncError.missingAccount }
+        let validate: @Sendable () throws -> Void = {
+            guard let current = try SharedStore.account(), current.id == account.id, current.sessionID == account.sessionID else { throw SyncError.missingAccount }
             if current.paused { throw SyncError.paused }
-        })
-    }
-
-    func item(_ record: ItemRecord) throws -> ProviderItem { ProviderItem(record, pin: try engine.catalog.pinned(record.id)) }
-    func signal(_ parents: Set<String> = [ItemRecord.rootID, ItemRecord.libraryID, ItemRecord.albumsID]) {
-        for id in parents { manager.signalEnumerator(for: ProviderItem.identifier(id)) { _ in } }
-        manager.signalEnumerator(for: .workingSet) { _ in }
-    }
-    func requestRefresh() {
-        let started = lock.withLock { () -> Bool in
-            if refreshing { return false }; refreshing = true; return true
         }
-        guard started else { return }
-        Task {
-            defer { lock.withLock { refreshing = false } }
-            do {
-                let requested = UserDefaults(suiteName: SharedStore.groupID)?.double(forKey: "refreshRequestedAt") ?? 0
-                let last = try engine.catalog.state("status", as: SyncStatus.self)?.lastRefresh?.timeIntervalSince1970 ?? 0
-                let parents = try await engine.refresh(force: requested > last)
-                if !parents.isEmpty { signal(parents) }
-            } catch { /* The engine persists the error for the menu bar. Cached metadata remains available. */ }
+        let api = ImmichAPI(serverURL: account.serverURL, token: {
+            try validate()
+            return try CredentialStore.read(sessionID: account.sessionID)
+        })
+        engine = try SyncEngine(catalog: catalog, remote: api, account: account, checkRunning: validate)
+    }
+    func item(_ record: ItemRecord) throws -> ProviderItem { ProviderItem(record, pin: try engine.catalog.pinned(record.id)) }
+    func signal() { manager.signalEnumerator(for: .workingSet) { _ in } }
+    func cancel() { lock.withLock { invalidated = true; job?.cancel() } }
+    func requestSync() {
+        lock.withLock {
+            guard !invalidated, job == nil else { return }
+            job = Task {
+                let before = try? engine.catalog.anchor()
+                defer {
+                    if let before, let after = try? engine.catalog.anchor(), before != after { signal() }
+                    lock.withLock { job = nil }
+                }
+                do {
+                    let requested = UserDefaults(suiteName: SharedStore.groupID)?.double(forKey: "syncRequestedAt") ?? 0
+                    let last = try engine.catalog.state("status", as: SyncStatus.self)?.lastSync?.timeIntervalSince1970 ?? 0
+                    try await engine.synchronize(force: requested > last)
+                } catch { /* SyncEngine persists errors; cached Finder metadata stays available. */ }
+            }
         }
     }
     func recordError(_ error: Error) {
@@ -56,13 +55,17 @@ enum ProviderRegistry {
     static let lock = NSLock()
     static var contexts: [String: ProviderContext] = [:]
     static func context(for domain: NSFileProviderDomain) throws -> ProviderContext {
-        try lock.withLock {
-            // A credentials update changes the domain version through re-registration; refresh the process
-            // after account repair so that a stale API client is never silently reused.
-            let key = domain.identifier.rawValue
-            if let context = contexts[key] { return context }
-            let context = try ProviderContext(domain: domain); contexts[key] = context; return context
+        return try lock.withLock {
+            guard let account = try SharedStore.account() else { throw SyncError.missingAccount }
+            let id = domain.identifier.rawValue
+            if let existing = contexts[id], existing.sessionID == account.sessionID { return existing }
+            contexts[id]?.cancel()
+            let context = try ProviderContext(domain: domain, account: account)
+            contexts[id] = context
+            return context
         }
     }
-    static func invalidate(_ domain: NSFileProviderDomain) { _ = lock.withLock { contexts.removeValue(forKey: domain.identifier.rawValue) } }
+    static func invalidate(_ domain: NSFileProviderDomain) {
+        lock.withLock { contexts.removeValue(forKey: domain.identifier.rawValue)?.cancel() }
+    }
 }

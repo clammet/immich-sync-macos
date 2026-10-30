@@ -24,52 +24,84 @@ private actor OperationGate {
     }
 }
 
-/// Serializes remote snapshots with writes across async suspension points.
-/// A Swift actor alone would allow a stale listing to overwrite a completed mutation during reentrancy.
+/// Serializes native sync and mutations across suspension points.
 public final class SyncEngine: @unchecked Sendable {
     public let catalog: Catalog
     private let remote: any ImmichRemote
+    private let account: Account
+    private var completedStream = false
     private let gate = OperationGate()
     private let checkRunning: @Sendable () throws -> Void
 
-    public init(catalog: Catalog, remote: any ImmichRemote, checkRunning: @escaping @Sendable () throws -> Void = {}) {
-        self.catalog = catalog; self.remote = remote; self.checkRunning = checkRunning
+    public init(catalog: Catalog, remote: any ImmichRemote, account: Account,
+                checkRunning: @escaping @Sendable () throws -> Void = {}) throws {
+        self.catalog = catalog; self.remote = remote; self.account = account; self.checkRunning = checkRunning
+        try catalog.prepareSession(account.sessionID)
     }
 
-    @discardableResult public func refresh(force: Bool = false) async throws -> Set<String> {
+    @discardableResult public func synchronize(force: Bool = false) async throws -> Bool {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        return try await refreshUnlocked(force: force)
-    }
-
-    private func refreshUnlocked(force: Bool) async throws -> Set<String> {
         try checkRunning(); try Task.checkCancellation()
+        let before = try catalog.anchor()
         var status = try catalog.state("status", as: SyncStatus.self) ?? SyncStatus()
-        if !force, let date = status.lastRefresh, Date().timeIntervalSince(date) < 300 { return [] }
-        status.refreshing = true; status.message = nil
+        if !force, let date = status.lastSync, Date().timeIntervalSince(date) < SyncContract.interval,
+           try catalog.pendingAcknowledgements().isEmpty { return false }
+        status.syncing = true; status.message = nil
         try catalog.setState("status", value: status)
         do {
-            let initialAnchor = try catalog.anchor()
-            var snapshot = try await remote.snapshot()
-            // Offset pagination is not an atomic snapshot. Confirm missing originals individually
-            // before publishing removals, so a moving page boundary cannot delete a live placeholder.
-            let received = Set(snapshot.assets.map(\.id))
-            let old = Dictionary(try catalog.all().compactMap(\.asset).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            for known in old.values where !received.contains(known.id) {
+            _ = try await supportedTypes()
+            // A lost ack response must be replayed before the server chooses the next change window.
+            try await flushAcknowledgements()
+            for attempt in 0..<2 {
+                let reset = try catalog.needsServerReset
+                completedStream = false
                 do {
-                    let current = try await remote.asset(known.id)
-                    if !current.isTrashed, current.visibility != "locked", current.ownerId == known.ownerId { snapshot.assets.append(current) }
-                } catch SyncError.missingItem { /* Confirmed remote deletion. */ }
+                    try await remote.synchronize(reset: reset, started: {
+                        try self.checkRunning()
+                        if reset { try self.catalog.acceptedReset(sessionID: self.account.sessionID) }
+                    }, receive: { events in
+                        try self.checkRunning(); try Task.checkCancellation()
+                        if try self.catalog.apply(events, userID: self.account.userID, sessionID: self.account.sessionID) {
+                            self.completedStream = true
+                        }
+                        try await self.flushAcknowledgements()
+                    })
+                    guard completedStream else { throw SyncError.invalidSyncStream }
+                    return try catalog.anchor() != before
+                } catch SyncError.syncReset {
+                    try catalog.requestReset(sessionID: account.sessionID)
+                    if attempt == 1 { throw SyncError.invalidSyncStream }
+                }
             }
-            try Task.checkCancellation()
-            let parents = try catalog.replace(with: ItemRecord.records(from: snapshot), expectedAnchor: initialAnchor)
-            try catalog.setState("mediaTypes", value: snapshot.mediaTypes)
-            try catalog.setState("status", value: SyncStatus(lastRefresh: Date(), assetCount: snapshot.assets.count, albumCount: snapshot.albums.count))
-            return parents
+            throw SyncError.invalidSyncStream
         } catch {
-            status.refreshing = false; status.message = error.localizedDescription
-            try? catalog.setState("status", value: status)
+            var failed = (try? catalog.state("status", as: SyncStatus.self)) ?? status
+            failed.syncing = false; failed.message = error.localizedDescription
+            try? catalog.setState("status", value: failed)
             throw error
         }
+    }
+
+    private func flushAcknowledgements() async throws {
+        let pending = try catalog.pendingAcknowledgements()
+        if !pending.isEmpty {
+            try checkRunning()
+            try await remote.acknowledge(pending)
+            try catalog.acknowledged(pending, sessionID: account.sessionID)
+        }
+    }
+    private func supportedTypes() async throws -> MediaTypes {
+        if let types = try catalog.state("mediaTypes", as: MediaTypes.self) { return types }
+        let types = try await remote.mediaTypes()
+        try catalog.setState("mediaTypes", value: types)
+        return types
+    }
+    private func commit(_ changes: [LocalChange]) throws {
+        try checkRunning(); try Task.checkCancellation()
+        try catalog.commitLocal(changes, userID: account.userID, sessionID: account.sessionID)
+    }
+    private func requireOwned(_ asset: Asset) throws {
+        guard asset.ownerId == account.userID else { throw SyncError.invalidResponse }
     }
 
     public func download(id: String, directory: URL, progress: Progress, requestedVersion: Data? = nil) async throws -> (URL, ItemRecord) {
@@ -103,20 +135,23 @@ public final class SyncEngine: @unchecked Sendable {
                 return try saveLocal(parentID: parentID, filename: filename, contents: nil)
             }
             let album = try await remote.createAlbum(name: filename)
-            _ = try await refreshUnlocked(force: true)
+            try commit([.album(album)])
             return try catalog.item(ItemRecord.albumID(album.id))
         }
         let parent = try catalog.item(parentID)
         guard parent.kind == .library || parent.kind == .album || parent.kind == .ignoredFolder || parent.kind == .albums else { throw SyncError.unsupportedLocation }
-        let types = try catalog.state("mediaTypes", as: MediaTypes.self) ?? MediaTypes(image: [], video: [])
+        let types = try await supportedTypes()
         if parent.kind == .ignoredFolder || parent.kind == .albums || !types.supports(filename: filename) {
             guard let contents else { throw SyncError.unsupported }
             return try saveLocal(parentID: parentID, filename: filename, contents: contents)
         }
         guard let contents else { throw SyncError.unsupported }
         let asset = try await remote.upload(contents, filename: filename, progress: progress)
+        try requireOwned(asset)
         if let albumID = parent.albumID { try await remote.add(asset.id, to: albumID) }
-        _ = try await refreshUnlocked(force: true)
+        var changes: [LocalChange] = [.asset(asset)]
+        if let albumID = parent.albumID { changes.append(.membership(album: albumID, asset: asset.id, present: true)) }
+        try commit(changes)
         return try catalog.item(ItemRecord.assetID(asset.id, albumID: parent.albumID))
     }
 
@@ -140,13 +175,16 @@ public final class SyncEngine: @unchecked Sendable {
         if record.isLocalOnly {
             let destination = parentID ?? record.parentID
             let name = filename ?? record.filename
-            let types = try catalog.state("mediaTypes", as: MediaTypes.self) ?? MediaTypes(image: [], video: [])
+            let types = try await supportedTypes()
             let parent = try catalog.item(destination)
             if record.kind == .ignoredFile, types.supports(filename: name), parent.kind == .library || parent.kind == .album {
                 let uploaded = try await remote.upload(contents ?? localURL(id), filename: name, progress: progress)
+                try requireOwned(uploaded)
                 if let albumID = parent.albumID { try await remote.add(uploaded.id, to: albumID) }
+                var changes: [LocalChange] = [.asset(uploaded)]
+                if let albumID = parent.albumID { changes.append(.membership(album: albumID, asset: uploaded.id, present: true)) }
+                try commit(changes)
                 try removeLocal(record)
-                _ = try await refreshUnlocked(force: true)
                 return try catalog.item(ItemRecord.assetID(uploaded.id, albumID: parent.albumID))
             }
             return try saveLocal(parentID: destination, filename: name, contents: contents,
@@ -157,9 +195,9 @@ public final class SyncEngine: @unchecked Sendable {
             if let filename, let albumID = record.albumID {
                 let suffix = " [\(albumID)]"
                 let name = filename.hasSuffix(suffix) ? String(filename.dropLast(suffix.count)) : filename
-                try await remote.renameAlbum(albumID, name: name)
+                let album = try await remote.renameAlbum(albumID, name: name)
+                try commit([.album(album)])
             }
-            _ = try await refreshUnlocked(force: true)
             return try catalog.item(id)
         }
         guard let original = record.asset, original.isMutable else { throw SyncError.unsupported }
@@ -173,7 +211,7 @@ public final class SyncEngine: @unchecked Sendable {
         }
         var asset = original
         if let contents {
-            let types = try catalog.state("mediaTypes", as: MediaTypes.self) ?? MediaTypes(image: [], video: [])
+            let types = try await supportedTypes()
             guard types.supports(filename: original.originalFileName) else { throw SyncError.unsupported }
             let hash = try FileDigest.sha1(contents).base64EncodedString()
             let journalKey = "edit:\(original.id):\(hash)"
@@ -182,6 +220,7 @@ public final class SyncEngine: @unchecked Sendable {
                 let current = try await remote.asset(original.id)
                 guard !current.isTrashed, current.contentVersion == baseContentVersion else { throw SyncError.conflict }
                 asset = try await remote.upload(contents, filename: original.originalFileName, progress: progress)
+                try requireOwned(asset)
                 if asset.id != original.id {
                     journal = EditJournal(targetID: asset.id, source: record)
                     try catalog.setState(journalKey, value: journal!)
@@ -215,7 +254,12 @@ public final class SyncEngine: @unchecked Sendable {
             if let targetAlbumID { try await remote.add(asset.id, to: targetAlbumID) }
             if let oldAlbumID = record.albumID { try await remote.remove(asset.id, from: oldAlbumID) }
         }
-        _ = try await refreshUnlocked(force: true)
+        var changes: [LocalChange] = asset.id == original.id ? [.asset(asset)] : [.replaceAsset(source: original.id, target: asset)]
+        if targetAlbumID != record.albumID {
+            if let targetAlbumID { changes.append(.membership(album: targetAlbumID, asset: asset.id, present: true)) }
+            if let old = record.albumID { changes.append(.membership(album: old, asset: asset.id, present: false)) }
+        }
+        try commit(changes)
         return try catalog.item(ItemRecord.assetID(asset.id, albumID: targetAlbumID))
     }
 
@@ -225,38 +269,30 @@ public final class SyncEngine: @unchecked Sendable {
         let record: ItemRecord
         do { record = try catalog.item(id) } catch SyncError.missingItem { return }
         if record.isLocalOnly {
-            let descendants = try catalog.all().filter { $0.parentID == id }
-            guard recursive || descendants.isEmpty else { throw SyncError.unsupportedLocation }
-            // Local-only trees have no remote counterparts. Retire their rows before removing stored bytes.
-            var remove = Set([id])
-            let all = try catalog.all()
-            var grew = true
-            while grew {
-                let before = remove.count
-                for child in all where remove.contains(child.parentID) { remove.insert(child.id) }
-                grew = before != remove.count
-            }
-            try catalog.replace(with: all.filter { !remove.contains($0.id) }, preserveLocal: false)
-            for local in all where remove.contains(local.id) && local.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(local.id)) }
+            let removed = try catalog.removeLocalTree(id, recursive: recursive)
+            for local in removed where local.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(local.id)) }
             return
         }
         if record.kind == .album, let albumID = record.albumID {
-            if !recursive, try catalog.all().contains(where: { $0.parentID == id }) { throw SyncError.unsupportedLocation }
+            if !recursive, try catalog.hasChildren(id) { throw SyncError.unsupportedLocation }
             // Deleting an album never deletes the photos inside it.
             do { try await remote.deleteAlbum(albumID) } catch SyncError.missingItem { }
+            try commit([.deleteAlbum(albumID)])
         } else if let asset = record.asset, asset.isMutable {
             if let albumID = record.albumID {
                 try await remote.remove(asset.id, from: albumID)
+                try commit([.membership(album: albumID, asset: asset.id, present: false)])
             } else {
                 let latest: Asset
-                do { latest = try await remote.asset(asset.id) } catch SyncError.missingItem { return }
+                do { latest = try await remote.asset(asset.id) }
+                catch SyncError.missingItem { try commit([.trashAsset(asset.id)]); return }
                 if !latest.isTrashed {
                     guard baseContentVersion == nil || latest.contentVersion == baseContentVersion else { throw SyncError.conflict }
                     try await remote.trash(asset.id)
                 }
+                try commit([.trashAsset(asset.id)])
             }
         } else { throw SyncError.unsupported }
-        _ = try await refreshUnlocked(force: true)
     }
 
     private func localURL(_ id: String) throws -> URL {
@@ -267,9 +303,9 @@ public final class SyncEngine: @unchecked Sendable {
     private func saveLocal(parentID: String, filename: String, contents: URL?, existing: ItemRecord? = nil) throws -> ItemRecord {
         let parent = try catalog.item(parentID)
         guard parent.isFolder, parent.kind != .root else { throw SyncError.unsupportedLocation }
-        var all = try catalog.all()
+        let siblings = try catalog.localChildren(parentID)
         let hash = try contents.map { try FileDigest.sha1($0).base64EncodedString() } ?? existing?.localHash
-        if existing == nil, let match = all.first(where: { $0.isLocalOnly && $0.parentID == parentID && $0.filename == filename && $0.localHash == hash }) {
+        if existing == nil, let match = siblings.first(where: { $0.isLocalOnly && $0.parentID == parentID && $0.filename == filename && $0.localHash == hash }) {
             return match
         }
         var record = existing ?? ItemRecord(id: "ignored:" + UUID().uuidString, parentID: parentID, filename: filename,
@@ -288,12 +324,11 @@ public final class SyncEngine: @unchecked Sendable {
             record.localHash = hash
             record.localSize = (try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
         }
-        all.removeAll { $0.id == record.id }; all.append(record)
-        try catalog.replace(with: all, preserveLocal: false)
+        try catalog.saveLocal(record)
         return record
     }
     private func removeLocal(_ record: ItemRecord) throws {
-        try catalog.replace(with: catalog.all().filter { $0.id != record.id }, preserveLocal: false)
+        _ = try catalog.removeLocalTree(record.id, recursive: false)
         if record.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(record.id)) }
     }
 }

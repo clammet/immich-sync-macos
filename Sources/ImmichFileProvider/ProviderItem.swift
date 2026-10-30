@@ -51,20 +51,22 @@ public final class ProviderItem: NSObject, NSFileProviderItem, NSFileProviderIte
 public enum ProviderErrors {
     /// Excluding an existing item instructs macOS to call deleteItem on its remote counterpart.
     /// Only use exclusion for NEW unsupported imports; existing originals must remain untouched.
-    public static func map(_ error: Error, newImport: Bool = false) -> Error {
+    public static func map(_ error: Error, newImport: Bool = false, identifier: NSFileProviderItemIdentifier? = nil) -> Error {
         let code: NSFileProviderError.Code
         switch error {
         case SyncError.unsupported, SyncError.unsupportedLocation: code = newImport ? .excludedFromSync : .cannotSynchronize
         case SyncError.missingAccount, SyncError.keychain: code = .notAuthenticated
         case SyncError.http(let status, _):
             switch status {
-            case 401, 403: code = .notAuthenticated
+            case 401: code = .notAuthenticated
             case 507: code = .insufficientQuota
-            case 400, 413, 415, 422: code = .cannotSynchronize
+            case 400, 403, 413, 415, 422: code = .cannotSynchronize
             default: code = .serverUnreachable
             }
         case SyncError.conflict, SyncError.trashDisabled: code = .cannotSynchronize
-        case SyncError.missingItem: code = .noSuchItem
+        case SyncError.missingItem:
+            if let identifier { return NSError.fileProviderErrorForNonExistentItem(withIdentifier: identifier) }
+            code = .noSuchItem
         case is CancellationError: return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
         default:
             if (error as NSError).code == NSURLErrorCancelled { return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError) }

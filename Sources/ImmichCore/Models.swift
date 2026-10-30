@@ -1,11 +1,11 @@
 import CryptoKit
 import Foundation
-import UniformTypeIdentifiers
 
 public enum SyncError: Error, LocalizedError {
     case invalidServer, insecureServer, missingAccount, paused, unsupported, unsupportedLocation
-    case http(Int, retryAfter: TimeInterval?), invalidResponse, incompleteListing, conflict, missingItem
+    case http(Int, retryAfter: TimeInterval?), invalidResponse, invalidAnchor, conflict, missingItem
     case database(String), keychain(Int32), incompatibleServer, trashDisabled
+    case invalidSyncStream, syncReset, invalidOAuthCallback, passwordChangeRequired
 
     public var errorDescription: String? {
         switch self {
@@ -17,20 +17,24 @@ public enum SyncError: Error, LocalizedError {
         case .unsupportedLocation: return "Use All Photos for media, or create an album directly inside Albums. Nested albums are not supported by Immich."
         case .http(let code, _):
             switch code {
-            case 401: return "The API key was rejected. Update it in Settings."
-            case 403: return "The API key is missing a required permission. See the setup instructions."
+            case 401: return "Sign in again. The credentials were rejected or the session has expired."
+            case 403: return "This account cannot perform the requested operation."
             case 413: return "The server or reverse proxy rejected this file's size."
             case 507: return "The Immich account or server has no storage available."
             default: return "Immich returned HTTP \(code)."
             }
         case .invalidResponse: return "The server returned an unexpected response. Check the server URL and version."
-        case .incompleteListing: return "Immich returned an incomplete listing. The last complete library has been retained."
+        case .invalidAnchor: return "The Finder enumeration must restart from the current catalog."
         case .conflict: return "This item changed on Immich. Your local edit has been preserved; resolve the conflict before retrying."
         case .missingItem: return "This item no longer exists on Immich."
         case .database(let message): return "The local sync database could not be accessed: \(message)"
         case .keychain(let code): return "Keychain access failed (\(code)). Unlock your login keychain and try again."
-        case .incompatibleServer: return "Immich Sync requires Immich 2.5 or later."
+        case .incompatibleServer: return "This build requires Immich \(SyncContract.serverVersion)."
         case .trashDisabled: return "Enable Immich trash with a retention period before syncing edits or deletions. The original has been kept."
+        case .invalidSyncStream: return "Immich returned an incomplete or unsupported sync stream. Saved changes will resume at the last committed checkpoint."
+        case .syncReset: return "Immich requested a new initial synchronization."
+        case .invalidOAuthCallback: return "The browser sign-in response could not be verified. Please start sign-in again."
+        case .passwordChangeRequired: return "Change your password in Immich on the web, then sign in again."
         }
     }
 }
@@ -60,50 +64,62 @@ public struct Account: Codable, Equatable, Sendable {
     public var serverURL: URL
     public var userID: String
     public var displayName: String
-    public var serverMajor: Int
-    public var serverMinor: Int
+    public var sessionID: String
+    public var email: String
     public var allowHTTP: Bool
     public var paused: Bool = false
 
     public init(id: String = UUID().uuidString, serverURL: URL, userID: String,
-                displayName: String, serverMajor: Int, serverMinor: Int, allowHTTP: Bool) {
+                displayName: String, email: String, sessionID: String, allowHTTP: Bool) {
         self.id = id; self.serverURL = serverURL; self.userID = userID
-        self.displayName = displayName; self.serverMajor = serverMajor
-        self.serverMinor = serverMinor; self.allowHTTP = allowHTTP
+        self.displayName = displayName; self.email = email
+        self.sessionID = sessionID; self.allowHTTP = allowHTTP
     }
-    public var usesCursorSearch: Bool { serverMajor > 3 || (serverMajor == 3 && serverMinor >= 2) }
 }
 
 public struct ServerVersion: Decodable, Sendable {
     public let major: Int
     public let minor: Int
     public let patch: Int
+    public let prerelease: Int?
+    public init(major: Int, minor: Int, patch: Int, prerelease: Int? = nil) {
+        self.major = major; self.minor = minor; self.patch = patch; self.prerelease = prerelease
+    }
+    public func requireSupported() throws {
+        guard prerelease == nil, "\(major).\(minor).\(patch)" == SyncContract.serverVersion else { throw SyncError.incompatibleServer }
+    }
 }
 
-public struct ImmichUser: Decodable, Sendable {
-    public let id: String
+public struct SessionLogin: Decodable, Sendable {
+    public let accessToken: String
+    public let userId: String
     public let name: String
+    public let userEmail: String
+    public let shouldChangePassword: Bool
+}
+
+public struct LoginSession: Decodable, Sendable {
+    public let id: String
+    public let current: Bool
 }
 
 public struct Asset: Codable, Equatable, Sendable {
     public let id: String
     public let ownerId: String
     public let originalFileName: String
-    public let originalMimeType: String?
     public let checksum: String
     public let type: String
     public let fileCreatedAt: String
     public let fileModifiedAt: String
     public let updatedAt: String
-    public let isTrashed: Bool
-    public let isOffline: Bool?
+    public var isTrashed: Bool
     public let visibility: String?
     public let libraryId: String?
-    public let exifInfo: Exif?
+    public var exifInfo: Exif?
 
     public struct Exif: Codable, Equatable, Sendable { public let fileSizeInByte: Int64? }
     public var contentVersion: Data { Data(checksum.utf8) }
-    public var isMutable: Bool { libraryId == nil && isOffline != true }
+    public var isMutable: Bool { libraryId == nil }
     public var size: Int64? { exifInfo?.fileSizeInByte }
 }
 
@@ -111,17 +127,11 @@ public struct Album: Codable, Equatable, Sendable {
     public let id: String
     public let albumName: String
     public let updatedAt: String
-    public let ownerId: String?
-    public let assetCount: Int
-}
-
-public struct SearchResponse: Decodable, Sendable {
-    public let assets: SearchAssets
-    public struct SearchAssets: Decodable, Sendable {
-        public let items: [Asset]
-        public let nextPage: String?
-        public let nextCursor: String?
-        public let total: Int
+    public let albumUsers: [User]
+    public struct User: Codable, Equatable, Sendable {
+        public let role: String
+        public let user: Identity
+        public struct Identity: Codable, Equatable, Sendable { public let id: String }
     }
 }
 
@@ -130,26 +140,12 @@ public struct MediaTypes: Codable, Equatable, Sendable {
     public let video: [String]
     public init(image: [String], video: [String]) { self.image = image; self.video = video }
 
-    // Immich currently reports extensions; accept MIME types too for server compatibility.
     public func supports(filename: String) -> Bool {
         guard !filename.hasPrefix("."), !filename.hasSuffix("~") else { return false }
         let ext = (filename as NSString).pathExtension.lowercased()
         guard !ext.isEmpty else { return false }
         let supported = Set((image + video).map { $0.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) })
-        if supported.contains(ext) { return true }
-        if supported.contains("image/" + ext) || supported.contains("video/" + ext) { return true }
-        guard let mime = UTType(filenameExtension: ext)?.preferredMIMEType else { return false }
-        return supported.contains(mime.lowercased())
-    }
-}
-
-public struct RemoteSnapshot: Sendable {
-    public var assets: [Asset]
-    public var albums: [Album]
-    public var memberships: [String: [String]]
-    public var mediaTypes: MediaTypes
-    public init(assets: [Asset], albums: [Album], memberships: [String: [String]], mediaTypes: MediaTypes) {
-        self.assets = assets; self.albums = albums; self.memberships = memberships; self.mediaTypes = mediaTypes
+        return supported.contains(ext)
     }
 }
 
@@ -178,25 +174,12 @@ public struct ItemRecord: Codable, Equatable, Sendable {
     }
     public static func albumID(_ id: String) -> String { "album:\(id)" }
 
-    public static func records(from snapshot: RemoteSnapshot) -> [ItemRecord] {
-        var records = [
+    public static var containers: [ItemRecord] {
+        [
             ItemRecord(id: rootID, parentID: rootID, filename: "Immich", kind: .root, modifiedAt: "1"),
             ItemRecord(id: libraryID, parentID: rootID, filename: "All Photos", kind: .library, modifiedAt: "1"),
             ItemRecord(id: albumsID, parentID: rootID, filename: "Albums", kind: .albums, modifiedAt: "1")
         ]
-        let assets = Dictionary(snapshot.assets.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        for asset in assets.values {
-            records.append(record(asset: asset))
-        }
-        for album in snapshot.albums {
-            records.append(ItemRecord(id: albumID(album.id), parentID: albumsID,
-                filename: safeName(album.albumName, identity: album.id), kind: .album,
-                albumID: album.id, modifiedAt: album.updatedAt))
-            for assetID in Set(snapshot.memberships[album.id] ?? []) {
-                if let asset = assets[assetID] { records.append(record(asset: asset, albumID: album.id)) }
-            }
-        }
-        return records.sorted { $0.id < $1.id }
     }
 
     public static func record(asset: Asset, albumID: String? = nil) -> ItemRecord {

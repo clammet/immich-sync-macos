@@ -1,49 +1,57 @@
-# Architecture and research
+# Native session and incremental sync architecture
 
-Research checked on 29 October 2026 against Apple's File Provider documentation, the installed macOS SDK headers, Immich's public OpenAPI specification, and its versioned 2.5 schema.
+The protocol contract is pinned to **Immich 3.3.5**, released 21 October 2026. The implementation uses one set of request/response formats and rejects other server versions. The source references below are pinned to that tag.
 
-## Native filesystem integration
+## Authentication
 
-The containing app is a SwiftUI `MenuBarExtra` with an account/settings window and optional login startup through `SMAppService`. `LSUIElement` keeps the main interface in the menu bar. A sandboxed embedded extension implements `NSFileProviderReplicatedExtension` and `NSFileProviderCustomAction`.
+The containing app signs in through `auth/login` or the server's OAuth authorize/callback endpoints. A browser authentication session uses the `immich-sync://oauth` redirect, a cryptographically random state, and an S256 PKCE challenge. Redirect origin/path, state uniqueness, and authorization-code presence are checked before exchange.
 
-The system owns the visible files and their hydration lifecycle. The client does not write into the visible cloud-storage tree, create fake placeholders, monitor it using FSEvents, or add a competing Finder Sync extension. It returns downloads through `NSFileProviderManager.temporaryDirectoryURL`, allowing macOS to take ownership on the correct volume.
+The returned token authenticates requests using the Authorization Bearer header. The app retrieves the newly created current session ID and stores the token in a Keychain entry keyed by that session ID. The shared account file contains the session ID and nonsecret configuration. Passwords, OAuth codes, and verifiers are not persisted.
 
-Availability is expressed using `NSFileProviderContentPolicy`: root items default to lazy downloads, ordinary items inherit their parent's policy, and pinned items use eager downloads with retention. Overrides are stored per device. Newly added children inherit folder availability automatically. Changing a policy creates a catalog event and signals the working set. The app reads the system's global transfer progress for its menu bar.
+Reauthentication switches the shared account file atomically. Provider contexts validate both account and session identity before requests and catalog commits; a new token cannot be used to acknowledge the previous session's checkpoints. The registry cancels an obsolete sync reader and creates a context for the new session. Enumerators resolve the current context for each call. The new session bootstraps its own checkpoints while retaining the visible catalog until completion.
 
-The working set includes every exposed file and folder, including all materialized items. Metadata enumeration is local and paginated. Remote refreshes happen asynchronously so listing a cached directory does not wait for a full network scan. Opaque page tokens bind a container and keyset offset to an exact catalog anchor. Changed snapshots expire page tokens; durable change anchors continue until a database epoch changes or becomes invalid. Finder thumbnails come from the server's derivative endpoint without hydrating originals.
+Disconnect removes the domain using Apple's preserve-downloaded-user-data mode, attempts to revoke the dedicated Immich session, and removes the local credential. A network failure during revocation does not prevent retaining local user data or forgetting the credential.
 
-Primary sources: [Apple's replicated File Provider overview](https://developer.apple.com/documentation/fileprovider/replicated-file-provider-extension), [synchronizing the extension](https://developer.apple.com/documentation/fileprovider/synchronizing-the-file-provider-extension), [content policies](https://developer.apple.com/documentation/fileprovider/nsfileprovidercontentpolicy), and [custom context-menu actions](https://developer.apple.com/documentation/fileproviderui/adding-actions-to-the-context-menu).
+Sources: [authentication service](https://github.com/immich-app/immich/blob/v3.3.5/server/src/services/auth.service.ts), [authentication endpoints](https://github.com/immich-app/immich/blob/v3.3.5/server/src/controllers/auth.controller.ts), and [OAuth DTOs in the OpenAPI contract](https://github.com/immich-app/immich/blob/v3.3.5/open-api/immich-openapi-specs.json).
 
-## Unsupported files
+## Incremental replication
 
-Immich's reported image/video formats are the authority. Extension allowlists, MIME-to-extension fallback, and case normalization handle the server response without accepting every macOS image type. Sidecars are not uploaded as standalone assets.
+The requested streams are AssetsV2, AlbumsV2, AlbumUsersV1, AlbumToAssetsV1, and AssetExifsV1. Some current upstream formats retain a V1 name; the client implements only the selected current contract for each stream. It excludes unrelated partner, face, memory, and other streams.
 
-Ordinary unsupported files and nested directories are represented by local-only catalog records with a native `NSFileProviderItemDecorating` overlay. Content is copied into durable application-group storage before completing the import. These records report `isUploaded = false` and use a keep-downloaded policy. They survive remote snapshots and are reparented into All Photos if their remote album disappears. Deleting one never issues an Immich request.
+`POST sync/stream` returns newline-delimited JSON. The framer accepts arbitrary packet/UTF-8 boundaries with a bounded maximum record size. The decoder validates entity names and acknowledgement types and handles current backfill/checkpoint markers. An unsupported record, incomplete line, missing terminal record, or data following completion fails the request.
 
-Packages and symlinks are refused using `excludedFromSync`, which keeps the system-owned local item. This error is deliberately not returned for an existing cloud asset: macOS can follow exclusion by requesting deletion of the remote counterpart. Rejected edits of existing originals report a synchronization error while preserving the original.
+A batch of at most 256 records updates normalized entities, affected Finder appearances, deletion tombstones, and a checkpoint outbox in one transaction. Only committed checkpoints are sent to `sync/ack`. Successful acknowledgement clears the matching outbox entries. A lost response leaves them pending, so they are resent before the next change window. Upserts and deletes are idempotent under replay.
 
-The badge uses an exported UTI conforming to `com.apple.icon-decoration.badge`, with an icon and a spoken/hover label. Apple's documented decoration and upload flags provide the integration; signed visual validation is still part of the release checklist.
+Completion is committed only after a valid final marker and clean stream termination. Empty change checks update the completion checkpoint/status without changing Finder anchors or invalidating pages. The native stream is a finite response; the menu bar app schedules checks every minute, and manual or Finder activity can trigger a check sooner.
 
-Primary sources: [item decoration](https://developer.apple.com/documentation/fileprovider/nsfileprovideritemdecorating), [item upload state](https://developer.apple.com/documentation/fileprovider/nsfileprovideritemprotocol/isuploaded), [excluded-from-sync behavior](https://developer.apple.com/documentation/fileprovider/nsfileprovidererror/code/excludedfromsync), and [Immich's supported formats](https://docs.immich.app/features/supported-formats/).
+Sources: [sync endpoints](https://github.com/immich-app/immich/blob/v3.3.5/server/src/controllers/sync.controller.ts), [stream and reset semantics](https://github.com/immich-app/immich/blob/v3.3.5/server/src/services/sync.service.ts), [wire DTOs](https://github.com/immich-app/immich/blob/v3.3.5/server/src/dtos/sync.dto.ts), and [acknowledgement serialization](https://github.com/immich-app/immich/blob/v3.3.5/server/src/utils/sync.ts).
 
-## API and data model
+## Bootstrap and reset
 
-Immich is an asset library with many-to-many album membership. All Photos exposes each owned, unlocked, nontrashed asset once. Albums contains owned album folders, each with independent provider identities for its member appearances. The same asset ID is used for all remote mutations. Original content hashes define content versions; metadata versions are derived separately.
+A new local replica requests a native reset before consuming data, including when the local database is lost but a server session still exists. The accepted-reset flag is persisted when response headers are validated. An interrupted bootstrap can resume from its committed checkpoints without repeatedly clearing server progress.
 
-Uploads use disk-backed multipart bodies and a streaming SHA-1 checksum. Downloads use disk-backed URLSession transfers and verify the original hash before handing content to macOS. SHA-1 here matches Immich's content-deduplication protocol; it is not used as an authentication mechanism. Normal TLS validation is retained. Cross-origin and downgrade redirects cannot receive the API key; mutations are not replayed through redirects. Transient metadata reads retry with capped backoff. Mutations rely on system retry and server deduplication instead of blind automatic replay.
+A reset stages entities in a replacement generation. The existing Finder projection and local-only data remain available. Bootstrap records and checkpoints persist in bounded batches, but the replacement projection becomes visible only when SyncCompleteV1 is committed. Publication compares stable item identities, emits actual changes/deletions, preserves pin overrides, and reparents local-only children if their remote album disappeared. Old normalized generations are then removed.
 
-The client uses public API-key endpoints. It adapts legacy page-based search to the newer cursor/filter search. Search includes stack members and filters ownership. Only a completed remote pass is committed to SQLite. Missing previously known originals are checked individually before being removed, reducing offset-pagination races. A failed fetch leaves the previous catalog intact.
+A server SyncResetV1 restarts this same bootstrap path. Repeated resets in one attempt fail instead of looping indefinitely. Account/session guards inside catalog transactions reject a stale reader after reauthentication.
 
-Content updates follow the supported upload-and-copy approach rather than the deprecated replacement endpoint. An edit journal records the target asset before copying associations or trashing the source. The source version is checked again before trashing it. No force deletion is performed. Trash availability and retention are checked immediately before requesting a trash operation. There is no atomic compare-and-delete API in Immich, so a final cross-client race remains possible.
+Source: [session progress reset transaction](https://github.com/immich-app/immich/blob/v3.3.5/server/src/repositories/session.repository.ts).
 
-Primary sources: [Immich API documentation](https://api.immich.app/), [current OpenAPI schema](https://github.com/immich-app/immich/blob/main/open-api/immich-openapi-specs.json), [versioned 2.5 schema](https://github.com/immich-app/immich/blob/v2.5.0/open-api/immich-openapi-specs.json), and [server deletion behavior](https://github.com/immich-app/immich/blob/main/server/src/services/asset.service.ts).
+## Local changes
 
-## Persistence and concurrency
+Uploads, downloads, album operations, association copying, and trash use the same authenticated REST client. Successful local operations update only the relevant normalized entities and Finder appearances. They never enumerate the remote library or force a global refresh. Server deltas later reconcile those rows normally.
 
-SQLite runs in WAL mode with full synchronization and a busy timeout. Catalog changes and deletion tombstones commit atomically. Anchors include a database epoch plus a monotonic event sequence. A snapshot commit checks its starting anchor inside the transaction, rejecting a stale writer if another extension instance has published newer changes. The host app reads status and never rewrites the remote catalog.
+Supported uploads use a disk-backed multipart body and streaming SHA-1 matching Immich's checksum protocol. Downloads verify original checksums before ownership passes to File Provider. SHA-1 is used for protocol integrity/deduplication, not authentication. Standard TLS validation remains enabled, redirects are refused, and mutations are not blindly replayed by the HTTP client.
 
-An explicit asynchronous gate serializes complete snapshot and mutation operations across suspension points. An actor alone would permit reentrant network work and allow an older snapshot to overwrite a newer mutation. Pending operations can be canceled while waiting. Downloads remain concurrent, bounded by the File Provider pipeline and URLSession connection pool.
+Edited originals are uploaded and verified, associations are copied, and the source is checked again before trashing. The durable edit journal records progress before subsequent mutations. New Finder appearances inherit explicit pin overrides from the previous asset. No force deletion is requested. Server trash availability/retention are checked before trashing; Immich has no atomic compare-and-delete endpoint.
 
-Only nonsecret configuration and local catalog data live in the application group. Credentials are stored in the shared, device-local Keychain access group and are reread when constructing requests, allowing key rotation without reusing stale authentication. Disconnect preserves downloaded and unsynced system-managed data. Durable local-only backing files are not automatically erased on disconnect.
+## File Provider and storage
 
-The current full-library polling strategy favors correctness and compatibility. Efficient large-library synchronization, journal compaction, remote snapshot fencing, richer conflict UI, and process-kill integration tests remain follow-up work for production hardening.
+The sandboxed SwiftUI menu bar app contains a replicated File Provider extension. macOS owns visible placeholders, hydration, and eviction. The extension supplies enumerators, content, thumbnails, custom availability actions, and item decorations. It returns originals through the manager's temporary directory on the managed volume. Availability uses native content policies, including inheritance for new children.
+
+SQLite uses WAL, full synchronization, and a busy timeout. Asset, album, owner-role, membership, and EXIF tables support changes proportional to the affected entities. Only albums owned by the connected user and eligible originals owned by that user are projected. Finder identifiers remain stable per original/album appearance. Initial publication iterates stored source rows rather than retaining the whole library as an in-memory snapshot.
+
+The working set includes every exposed item. Finder change anchors combine a database epoch and monotonic event sequence. Page tokens include their container, keyset offset, and anchor. Approximately 50,000 recent events are retained; older anchors explicitly expire and trigger normal Finder enumeration.
+
+Unsupported ordinary files and nested directories have durable local-only rows/content, a grey native decoration, a not-uploaded flag, and keep-downloaded policy. They are never included in server checkpoint state. Packages and symlinks use native exclusion. The exclusion error is not returned for existing cloud originals because macOS may follow it with remote deletion.
+
+Sources: [Apple replicated File Provider](https://developer.apple.com/documentation/fileprovider/replicated-file-provider-extension), [working-set synchronization](https://developer.apple.com/documentation/fileprovider/synchronizing-the-file-provider-extension), [content policy](https://developer.apple.com/documentation/fileprovider/nsfileprovidercontentpolicy), and [context-menu actions](https://developer.apple.com/documentation/fileproviderui/adding-actions-to-the-context-menu).
