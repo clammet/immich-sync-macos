@@ -4,8 +4,8 @@ import Foundation
 public enum SyncError: Error, LocalizedError {
     case invalidServer, insecureServer, missingAccount, paused, unsupported, unsupportedLocation
     case http(Int, retryAfter: TimeInterval?), invalidResponse, invalidAnchor, conflict, missingItem
-    case database(String), keychain(Int32), incompatibleServer, trashDisabled
-    case invalidSyncStream, syncReset, invalidOAuthCallback, passwordChangeRequired
+    case database(String), credentialStorage, incompatibleServer, trashDisabled
+    case invalidSyncStream, syncReset, invalidOAuthCallback, passwordChangeRequired, serverOrganization
 
     public var errorDescription: String? {
         switch self {
@@ -14,7 +14,8 @@ public enum SyncError: Error, LocalizedError {
         case .missingAccount: return "Connect your Immich account in Settings."
         case .paused: return "Sync is paused. Resume it from the menu bar."
         case .unsupported: return "This file type is not supported by your Immich server. It stays on this Mac and is not backed up."
-        case .unsupportedLocation: return "Use All Photos for media, or create an album directly inside Albums. Nested albums are not supported by Immich."
+        case .unsupportedLocation: return "Drop media into Folder View, or create an album directly inside Albums. Nested albums stay on this Mac."
+        case .serverOrganization: return "Immich controls Folder View through its storage template. Server folders and original filenames cannot be renamed or moved here. Your local content is preserved."
         case .http(let code, _):
             switch code {
             case 401: return "Sign in again. The credentials were rejected or the session has expired."
@@ -28,7 +29,7 @@ public enum SyncError: Error, LocalizedError {
         case .conflict: return "This item changed on Immich. Your local edit has been preserved; resolve the conflict before retrying."
         case .missingItem: return "This item no longer exists on Immich."
         case .database(let message): return "The local sync database could not be accessed: \(message)"
-        case .keychain(let code): return "Keychain access failed (\(code)). Unlock your login keychain and try again."
+        case .credentialStorage: return "The saved sign-in credentials could not be accessed safely. Sign in again in Settings."
         case .incompatibleServer: return "This build requires Immich \(SyncContract.serverVersion)."
         case .trashDisabled: return "Enable Immich trash with a retention period before syncing edits or deletions. The original has been kept."
         case .invalidSyncStream: return "Immich returned an incomplete or unsupported sync stream. Saved changes will resume at the last committed checkpoint."
@@ -116,6 +117,7 @@ public struct Asset: Codable, Equatable, Sendable {
     public let visibility: String?
     public let libraryId: String?
     public var exifInfo: Exif?
+    public var originalPath: String? = nil
 
     public struct Exif: Codable, Equatable, Sendable { public let fileSizeInByte: Int64? }
     public var contentVersion: Data { Data(checksum.utf8) }
@@ -150,7 +152,7 @@ public struct MediaTypes: Codable, Equatable, Sendable {
 }
 
 public struct ItemRecord: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case root, library, albums, album, asset, ignoredFile, ignoredFolder }
+    public enum Kind: String, Codable, Sendable { case root, library, albums, album, folder, externalFolder, asset, ignoredFile, ignoredFolder }
     public static let rootID = "root"
     public static let libraryID = "all-photos"
     public static let albumsID = "albums"
@@ -166,7 +168,7 @@ public struct ItemRecord: Codable, Equatable, Sendable {
     public var isLocalOnly: Bool { kind == .ignoredFile || kind == .ignoredFolder }
     public var isFolder: Bool { kind != .asset && kind != .ignoredFile }
     public var contentVersion: Data { asset?.contentVersion ?? Data((localHash ?? "folder").utf8) }
-    public var metadataVersion: Data { Data(SHA256.hash(data: Data("\(parentID)|\(filename)|\(modifiedAt)".utf8))) }
+    public var metadataVersion: Data { Data(SHA256.hash(data: Data("\(kind.rawValue)|\(parentID)|\(filename)|\(modifiedAt)".utf8))) }
     public var isMutable: Bool { asset?.isMutable ?? (kind == .album) }
 
     public static func assetID(_ assetID: String, albumID: String? = nil) -> String {
@@ -177,7 +179,7 @@ public struct ItemRecord: Codable, Equatable, Sendable {
     public static var containers: [ItemRecord] {
         [
             ItemRecord(id: rootID, parentID: rootID, filename: "Immich", kind: .root, modifiedAt: "1"),
-            ItemRecord(id: libraryID, parentID: rootID, filename: "All Photos", kind: .library, modifiedAt: "1"),
+            ItemRecord(id: libraryID, parentID: rootID, filename: "Folder View", kind: .library, modifiedAt: "1"),
             ItemRecord(id: albumsID, parentID: rootID, filename: "Albums", kind: .albums, modifiedAt: "1")
         ]
     }

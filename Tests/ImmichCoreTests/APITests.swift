@@ -131,6 +131,73 @@ final class APITests: XCTestCase {
         let bytes = try await api().thumbnail("one", large: false)
         XCTAssertEqual(bytes, Data("preview".utf8))
     }
+    func testExactIDPathLookupUsesStructuredFiltersAndCursorAndIncludesStackedAssets() async throws {
+        let first = "11111111-1111-4111-8111-111111111111", second = "22222222-2222-4222-8222-222222222222"
+        var requests = 0
+        MockProtocol.handler = { request in
+            requests += 1
+            XCTAssertEqual(request.url?.path, "/prefix/api/search/metadata")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let body = try requestBody(request)
+            XCTAssertEqual(body["size"] as? Int, 100)
+            XCTAssertEqual(body["withStacked"] as? Bool, true)
+            XCTAssertEqual(body["withExif"] as? Bool, false)
+            XCTAssertNil(body["id"]); XCTAssertNil(body["page"]); XCTAssertNil(body["withDeleted"])
+            let branches = (body["filter"] as! [String: Any])["or"] as! [[String: [String: String]]]
+            XCTAssertEqual(branches.map { $0["id"]!["eq"]! }, [first,second])
+            XCTAssertEqual(body["cursor"] as? String, requests == 1 ? nil : "opaque-cursor")
+            let asset = makeAsset(requests == 1 ? first : second, path: requests == 1 ? "/upload/tmp.jpg" : "/data/library/2026/server.jpg")
+            let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(asset))
+            return .json(["assets": ["items": [object], "nextCursor": requests == 1 ? "opaque-cursor" as Any : NSNull()]])
+        }
+        let assets = try await api().assetPaths(ids: [first,second])
+        XCTAssertEqual(requests, 2)
+        XCTAssertEqual(assets.map(\.originalPath), ["/upload/tmp.jpg","/data/library/2026/server.jpg"])
+    }
+    func testPathLookupRejectsUnexpectedDuplicateAndNonadvancingPages() async throws {
+        for scenario in 0..<3 {
+            var requests = 0
+            MockProtocol.handler = { _ in
+                requests += 1
+                let id = scenario == 0 ? "unexpected" : "one"
+                let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(id, path: "/data/file.jpg")))
+                return .json(["assets": ["items": scenario == 2 ? [] : [object], "nextCursor": "same-cursor"]])
+            }
+            do { _ = try await api().assetPaths(ids: ["one","two"]); XCTFail("Expected invalid response") }
+            catch SyncError.invalidResponse { }
+            XCTAssertLessThanOrEqual(requests, 2)
+        }
+        MockProtocol.handler = { _ in XCTFail("Invalid batches must not reach server"); return .json([:]) }
+        for ids in [[],["same","same"],(0..<101).map(String.init)] {
+            do { _ = try await api().assetPaths(ids: ids); XCTFail("Expected invalid batch") }
+            catch SyncError.invalidResponse { }
+        }
+    }
+    func testReadOnlyMetadataPostRetriesTransientFailure() async throws {
+        var requests = 0
+        MockProtocol.handler = { _ in
+            requests += 1
+            if requests == 1 { return Reply(status: 503, mime: "application/json", chunks: []) }
+            let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(path: "/data/file.jpg")))
+            return .json(["assets": ["items": [object],"nextCursor": NSNull()]])
+        }
+        let assets = try await api().assetPaths(ids: ["one"])
+        XCTAssertEqual(requests, 2); XCTAssertEqual(assets.first?.originalPath, "/data/file.jpg")
+    }
+    func testUploadReusesChecksumVerificationLookupToCaptureServerPath() async throws {
+        let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("new.jpg"); try Data("media".utf8).write(to: file)
+        let checksum = try FileDigest.sha1(file).base64EncodedString()
+        var requests: [String] = []
+        MockProtocol.handler = { request in
+            requests.append(request.httpMethod! + " " + request.url!.path)
+            if request.httpMethod == "POST" { return .json(["id": "one","status": "created"]) }
+            return .json(try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(checksum: checksum, path: "/upload/owner/temporary.jpg"))))
+        }
+        let asset = try await api().upload(file, filename: "new.jpg", progress: Progress())
+        XCTAssertEqual(asset.originalPath, "/upload/owner/temporary.jpg")
+        XCTAssertEqual(requests, ["POST /prefix/api/assets","GET /prefix/api/assets/one"])
+    }
     private func api(authenticated: Bool = true) -> ImmichAPI {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
         return ImmichAPI(serverURL: URL(string: "https://photos.example.com/prefix/api")!,

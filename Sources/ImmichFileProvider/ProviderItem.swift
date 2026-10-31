@@ -22,7 +22,8 @@ public final class ProviderItem: NSObject, NSFileProviderItem, NSFileProviderIte
     public var capabilities: NSFileProviderItemCapabilities {
         switch record.kind {
         case .root: return [.allowsReading]
-        case .library, .albums: return [.allowsReading, .allowsAddingSubItems]
+        case .library, .albums, .folder: return [.allowsReading, .allowsAddingSubItems]
+        case .externalFolder: return [.allowsReading]
         case .album: return [.allowsReading, .allowsAddingSubItems, .allowsRenaming, .allowsDeleting]
         case .asset:
             return record.isMutable ? [.allowsReading, .allowsWriting, .allowsDeleting, .allowsReparenting] : [.allowsReading]
@@ -55,7 +56,7 @@ public enum ProviderErrors {
         let code: NSFileProviderError.Code
         switch error {
         case SyncError.unsupported, SyncError.unsupportedLocation: code = newImport ? .excludedFromSync : .cannotSynchronize
-        case SyncError.missingAccount, SyncError.keychain: code = .notAuthenticated
+        case SyncError.missingAccount, SyncError.credentialStorage: code = .notAuthenticated
         case SyncError.http(let status, _):
             switch status {
             case 401: code = .notAuthenticated
@@ -63,7 +64,7 @@ public enum ProviderErrors {
             case 400, 403, 413, 415, 422: code = .cannotSynchronize
             default: code = .serverUnreachable
             }
-        case SyncError.conflict, SyncError.trashDisabled: code = .cannotSynchronize
+        case SyncError.conflict, SyncError.trashDisabled, SyncError.serverOrganization: code = .cannotSynchronize
         case SyncError.missingItem:
             if let identifier { return NSError.fileProviderErrorForNonExistentItem(withIdentifier: identifier) }
             code = .noSuchItem

@@ -6,6 +6,7 @@ public protocol ImmichRemote: Sendable {
     func acknowledge(_ acks: [String]) async throws
     func mediaTypes() async throws -> MediaTypes
     func asset(_ id: String) async throws -> Asset
+    func assetPaths(ids: [String]) async throws -> [Asset]
     func upload(_ file: URL, filename: String, progress: Progress) async throws -> Asset
     func download(_ asset: Asset, into directory: URL, progress: Progress) async throws -> URL
     func thumbnail(_ assetID: String, large: Bool) async throws -> Data
@@ -193,6 +194,35 @@ public final class ImmichAPI: ImmichRemote, @unchecked Sendable {
     }
 
     public func asset(_ id: String) async throws -> Asset { try await json("assets/\(id)") }
+
+    /// A read-only POST: bounded exact-ID queries, including stacked assets, never a folder scan.
+    public func assetPaths(ids: [String]) async throws -> [Asset] {
+        guard !ids.isEmpty, ids.count <= 100, Set(ids).count == ids.count else { throw SyncError.invalidResponse }
+        struct Response: Decodable {
+            struct Assets: Decodable { let items: [Asset]; let nextCursor: String? }
+            let assets: Assets
+        }
+        var result: [Asset] = [], cursor: String?
+        var cursors = Set<String>(), seen = Set<String>()
+        // Each nonterminal page must contain a new requested identity, bounding even a broken server.
+        repeat {
+            var body: [String: Any] = ["filter": ["or": ids.map { ["id": ["eq": $0]] }],
+                                       "size": 100, "withExif": false, "withStacked": true]
+            if let cursor { body["cursor"] = cursor }
+            let request = try request("search/metadata", method: "POST", body: JSONSerialization.data(withJSONObject: body))
+            let response = try JSONDecoder().decode(Response.self, from: await data(request, retry: true))
+            guard response.assets.items.allSatisfy({ ids.contains($0.id) && seen.insert($0.id).inserted }) else {
+                throw SyncError.invalidResponse
+            }
+            result += response.assets.items
+            cursor = response.assets.nextCursor
+            if let cursor {
+                guard !cursor.isEmpty, !response.assets.items.isEmpty, result.count < ids.count,
+                      cursors.insert(cursor).inserted else { throw SyncError.invalidResponse }
+            }
+        } while cursor != nil
+        return result
+    }
 
     public func thumbnail(_ assetID: String, large: Bool) async throws -> Data {
         var request = try request("assets/\(assetID)/thumbnail", query: [URLQueryItem(name: "size", value: large ? "preview" : "thumbnail")])

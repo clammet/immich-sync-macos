@@ -30,6 +30,7 @@ def configs(name, settings):
     for mode in ["Debug", "Release"]:
         mode_settings = dict(settings)
         mode_settings["SWIFT_OPTIMIZATION_LEVEL"] = "-Onone" if mode == "Debug" else "-O"
+        mode_settings["ONLY_ACTIVE_ARCH"] = "YES" if mode == "Debug" else "NO"
         if mode == "Debug": mode_settings["SWIFT_ACTIVE_COMPILATION_CONDITIONS"] = "DEBUG"
         values.append(add(name + mode, "XCBuildConfiguration", baseConfigurationReference=config, name=mode, buildSettings=mode_settings))
     return add(name + "configs", "XCConfigurationList", buildConfigurations=values, defaultConfigurationIsVisible="0", defaultConfigurationName="Release")

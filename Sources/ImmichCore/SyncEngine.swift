@@ -44,11 +44,19 @@ public final class SyncEngine: @unchecked Sendable {
         try checkRunning(); try Task.checkCancellation()
         let before = try catalog.anchor()
         var status = try catalog.state("status", as: SyncStatus.self) ?? SyncStatus()
-        if !force, let date = status.lastSync, Date().timeIntervalSince(date) < SyncContract.interval,
-           try catalog.pendingAcknowledgements().isEmpty { return false }
+        let nativeDue = try force || catalog.isBootstrapping || !catalog.pendingAcknowledgements().isEmpty ||
+            status.lastSync.map { Date().timeIntervalSince($0) >= SyncContract.interval } ?? true
+        if !nativeDue, try catalog.pathWork(sessionID: account.sessionID, userID: account.userID).isEmpty { return false }
         status.syncing = true; status.message = nil
         try catalog.setState("status", value: status)
         do {
+            if !nativeDue {
+                try await resolvePaths()
+                var finished = try catalog.state("status", as: SyncStatus.self) ?? status
+                finished.syncing = false; finished.message = nil
+                try catalog.setState("status", value: finished)
+                return try catalog.anchor() != before
+            }
             _ = try await supportedTypes()
             // A lost ack response must be replayed before the server chooses the next change window.
             try await flushAcknowledgements()
@@ -67,6 +75,7 @@ public final class SyncEngine: @unchecked Sendable {
                         try await self.flushAcknowledgements()
                     })
                     guard completedStream else { throw SyncError.invalidSyncStream }
+                    try await resolvePaths()
                     return try catalog.anchor() != before
                 } catch SyncError.syncReset {
                     try catalog.requestReset(sessionID: account.sessionID)
@@ -79,6 +88,24 @@ public final class SyncEngine: @unchecked Sendable {
             failed.syncing = false; failed.message = error.localizedDescription
             try? catalog.setState("status", value: failed)
             throw error
+        }
+    }
+
+    private func resolvePaths() async throws {
+        // One in-flight metadata request, at most 100 exact IDs. This also resumes initial
+        // indexing after a crash, without scanning folders or maintaining a second cursor.
+        while true {
+            try checkRunning(); try Task.checkCancellation()
+            let work = try catalog.pathWork(sessionID: account.sessionID, userID: account.userID)
+            if work.isEmpty { return }
+            do {
+                let assets = try await remote.assetPaths(ids: work.map(\.id))
+                try checkRunning(); try Task.checkCancellation()
+                try catalog.resolvedPaths(assets, work: work, userID: account.userID, sessionID: account.sessionID)
+            } catch {
+                try? catalog.failedPaths(work, sessionID: account.sessionID)
+                throw error
+            }
         }
     }
 
@@ -118,7 +145,18 @@ public final class SyncEngine: @unchecked Sendable {
         guard latest.ownerId == known.ownerId, !latest.isTrashed else { throw SyncError.missingItem }
         if let requestedVersion, requestedVersion != latest.contentVersion { throw SyncError.conflict }
         let url = try await remote.download(latest, into: directory, progress: progress)
-        return (url, ItemRecord.record(asset: latest, albumID: record.albumID))
+        // Path reconciliation can run during a download. Return the current appearance,
+        // retaining its identity and parent instead of rebuilding the old flat projection.
+        do {
+            var current = try catalog.item(id)
+            guard current.asset?.id == latest.id else { throw SyncError.missingItem }
+            if let requestedVersion, current.contentVersion != requestedVersion { throw SyncError.conflict }
+            current.asset = latest
+            return (url, current)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 
     public func thumbnail(id: String, large: Bool) async throws -> Data? {
@@ -139,9 +177,9 @@ public final class SyncEngine: @unchecked Sendable {
             return try catalog.item(ItemRecord.albumID(album.id))
         }
         let parent = try catalog.item(parentID)
-        guard parent.kind == .library || parent.kind == .album || parent.kind == .ignoredFolder || parent.kind == .albums else { throw SyncError.unsupportedLocation }
+        guard parent.isFolder, parent.kind != .root else { throw SyncError.unsupportedLocation }
         let types = try await supportedTypes()
-        if parent.kind == .ignoredFolder || parent.kind == .albums || !types.supports(filename: filename) {
+        if parent.kind == .ignoredFolder || parent.kind == .externalFolder || parent.kind == .albums || !types.supports(filename: filename) {
             guard let contents else { throw SyncError.unsupported }
             return try saveLocal(parentID: parentID, filename: filename, contents: contents)
         }
@@ -177,7 +215,7 @@ public final class SyncEngine: @unchecked Sendable {
             let name = filename ?? record.filename
             let types = try await supportedTypes()
             let parent = try catalog.item(destination)
-            if record.kind == .ignoredFile, types.supports(filename: name), parent.kind == .library || parent.kind == .album {
+            if record.kind == .ignoredFile, types.supports(filename: name), parent.kind == .library || parent.kind == .folder || parent.kind == .album {
                 let uploaded = try await remote.upload(contents ?? localURL(id), filename: name, progress: progress)
                 try requireOwned(uploaded)
                 if let albumID = parent.albumID { try await remote.add(uploaded.id, to: albumID) }
@@ -200,14 +238,21 @@ public final class SyncEngine: @unchecked Sendable {
             }
             return try catalog.item(id)
         }
+        if record.kind == .folder || record.kind == .externalFolder { throw SyncError.serverOrganization }
         guard let original = record.asset, original.isMutable else { throw SyncError.unsupported }
         // Immich intentionally has no original filename rename endpoint. Do not pretend it does.
-        guard filename == nil || filename == record.filename else { throw SyncError.unsupported }
+        guard filename == nil || filename == record.filename else { throw SyncError.serverOrganization }
         var targetAlbumID = record.albumID
         if let parentID {
             let destination = try catalog.item(parentID)
-            guard destination.kind == .album || destination.kind == .library else { throw SyncError.unsupportedLocation }
-            targetAlbumID = destination.albumID
+            if destination.kind == .album {
+                targetAlbumID = destination.albumID
+            } else if record.albumID != nil, destination.kind == .library || destination.kind == .folder {
+                // Leaving an album changes membership; it cannot choose the server directory.
+                targetAlbumID = nil
+            } else if parentID != record.parentID {
+                throw SyncError.serverOrganization
+            }
         }
         var asset = original
         if let contents {
@@ -273,6 +318,7 @@ public final class SyncEngine: @unchecked Sendable {
             for local in removed where local.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(local.id)) }
             return
         }
+        if record.kind == .folder || record.kind == .externalFolder { throw SyncError.serverOrganization }
         if record.kind == .album, let albumID = record.albumID {
             if !recursive, try catalog.hasChildren(id) { throw SyncError.unsupportedLocation }
             // Deleting an album never deletes the photos inside it.
@@ -325,7 +371,7 @@ public final class SyncEngine: @unchecked Sendable {
             record.localSize = (try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
         }
         try catalog.saveLocal(record)
-        return record
+        return try catalog.item(record.id)
     }
     private func removeLocal(_ record: ItemRecord) throws {
         _ = try catalog.removeLocalTree(record.id, recursive: false)

@@ -11,10 +11,10 @@ func testAccount(sessionID: String = "mac-session") -> Account {
     Account(serverURL: URL(string: "https://photos.example.com/api")!, userID: "owner", displayName: "Test",
         email: "test@example.com", sessionID: sessionID, allowHTTP: false)
 }
-func makeAsset(_ id: String = "one", checksum: String = "original", libraryID: String? = nil, trashed: Bool = false) -> Asset {
+func makeAsset(_ id: String = "one", checksum: String = "original", libraryID: String? = nil, trashed: Bool = false, path: String? = nil) -> Asset {
     Asset(id: id, ownerId: "owner", originalFileName: "photo.jpg", checksum: checksum,
         type: "IMAGE", fileCreatedAt: "2026-01-01T00:00:00Z", fileModifiedAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z", isTrashed: trashed, visibility: "timeline", libraryId: libraryID, exifInfo: nil)
+        updatedAt: "2026-01-01T00:00:00Z", isTrashed: trashed, visibility: "timeline", libraryId: libraryID, exifInfo: nil, originalPath: path)
 }
 func makeAlbum(_ id: String = "album", name: String = "Holiday") -> Album {
     Album(id: id, albumName: name, updatedAt: "2026-01-01T00:00:00Z", albumUsers: [.init(role: "owner", user: .init(id: "owner"))])
@@ -56,6 +56,12 @@ final class FakeRemote: ImmichRemote, @unchecked Sendable {
     var streams: [Stream] = []
     var assets = [makeAsset()]
     var events: [String] = []
+    var pathRequests: [[String]] = []
+    var pathFails = false
+    var downloadCount = 0
+    var uploadPath: String? = nil
+    var afterDownload: (() throws -> Void)?
+    var afterPaths: (() throws -> Void)?
     var resets: [Bool] = []
     var ackAttempts: [[String]] = []
     var failAck = false
@@ -80,12 +86,25 @@ final class FakeRemote: ImmichRemote, @unchecked Sendable {
     func asset(_ id: String) async throws -> Asset {
         guard let asset = assets.first(where: { $0.id == id }) else { throw SyncError.missingItem }; return asset
     }
+    func assetPaths(ids: [String]) async throws -> [Asset] {
+        pathRequests.append(ids)
+        if pathFails { throw SyncError.http(503, retryAfter: nil) }
+        let result = assets.filter { ids.contains($0.id) }
+        try afterPaths?()
+        return result
+    }
     func upload(_ file: URL, filename: String, progress: Progress) async throws -> Asset {
         events.append("upload")
-        let result = makeAsset("edited", checksum: try FileDigest.sha1(file).base64EncodedString())
+        let result = makeAsset("edited", checksum: try FileDigest.sha1(file).base64EncodedString(), path: uploadPath)
         assets.append(result); return result
     }
-    func download(_ asset: Asset, into directory: URL, progress: Progress) async throws -> URL { throw SyncError.unsupported }
+    func download(_ asset: Asset, into directory: URL, progress: Progress) async throws -> URL {
+        downloadCount += 1
+        try afterDownload?()
+        let file = directory.appendingPathComponent(UUID().uuidString)
+        try Data("original".utf8).write(to: file)
+        return file
+    }
     func thumbnail(_ assetID: String, large: Bool) async throws -> Data { Data("preview".utf8) }
     func createAlbum(name: String) async throws -> Album { events.append("create-album"); return makeAlbum("new-album", name: name) }
     func renameAlbum(_ id: String, name: String) async throws -> Album { events.append("rename-album"); return makeAlbum(id, name: name) }

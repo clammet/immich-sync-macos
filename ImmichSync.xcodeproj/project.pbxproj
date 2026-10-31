@@ -144,6 +144,7 @@
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"SKIP_INSTALL" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
@@ -166,6 +167,7 @@
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"SKIP_INSTALL" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
 		"78D634E8BEED8D12711109EE" = {
@@ -255,6 +257,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
@@ -275,6 +278,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
 		"C3A4610EB8BA32C0735057EB" = {
@@ -416,6 +420,7 @@
 				"SDKROOT" = "macosx";
 				"CLANG_ENABLE_MODULES" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
@@ -427,6 +432,7 @@
 				"SDKROOT" = "macosx";
 				"CLANG_ENABLE_MODULES" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
 		"862894B703A6DEDF96A9DD6C" = {

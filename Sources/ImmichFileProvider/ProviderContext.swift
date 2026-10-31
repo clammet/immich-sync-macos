@@ -20,7 +20,7 @@ final class ProviderContext: @unchecked Sendable {
         }
         let api = ImmichAPI(serverURL: account.serverURL, token: {
             try validate()
-            return try CredentialStore.read(sessionID: account.sessionID)
+            return try CredentialStore.read(for: account)
         })
         engine = try SyncEngine(catalog: catalog, remote: api, account: account, checkRunning: validate)
     }

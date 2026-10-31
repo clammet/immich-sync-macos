@@ -49,6 +49,7 @@ public final class Catalog: @unchecked Sendable {
         try execute("PRAGMA synchronous=FULL")
         try execute("CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, parent TEXT NOT NULL, asset TEXT, album TEXT, local INTEGER NOT NULL, generation INTEGER, payload BLOB NOT NULL)")
         try execute("CREATE INDEX IF NOT EXISTS item_parent ON items(parent,id)")
+        try execute("CREATE INDEX IF NOT EXISTS item_parent_local ON items(parent,local)")
         try execute("CREATE INDEX IF NOT EXISTS item_asset ON items(asset)")
         try execute("CREATE INDEX IF NOT EXISTS item_album ON items(album)")
         try execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, parent TEXT NOT NULL, payload BLOB)")
@@ -60,12 +61,14 @@ public final class Catalog: @unchecked Sendable {
         try execute("CREATE TABLE IF NOT EXISTS album_users (generation INTEGER, album TEXT, user TEXT, role TEXT NOT NULL, PRIMARY KEY(generation,album,user))")
         try execute("CREATE TABLE IF NOT EXISTS memberships (generation INTEGER, album TEXT, asset TEXT, PRIMARY KEY(generation,album,asset))")
         try execute("CREATE INDEX IF NOT EXISTS membership_asset ON memberships(generation,asset,album)")
+        try execute("CREATE TABLE IF NOT EXISTS path_work (generation INTEGER, id TEXT, revision TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0, PRIMARY KEY(generation,id))")
+        try execute("CREATE INDEX IF NOT EXISTS path_work_due ON path_work(generation,due,id)")
+        try execute("CREATE TABLE IF NOT EXISTS item_names (id TEXT PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL)")
+        try execute("CREATE INDEX IF NOT EXISTS item_name_parent ON item_names(parent,name)")
         try execute("CREATE TABLE IF NOT EXISTS checkpoints (kind TEXT PRIMARY KEY, ack TEXT NOT NULL, pending INTEGER NOT NULL)")
         try transaction {
             if try stateUnlocked("epoch", as: String.self) == nil { try setStateUnlocked("epoch", value: UUID().uuidString) }
-            if try itemUnlocked(ItemRecord.rootID) == nil {
-                for record in ItemRecord.containers { try upsertItem(record, generation: nil) }
-            }
+            for record in ItemRecord.containers { try upsertItem(record, generation: nil) }
         }
     }
     deinit { sqlite3_close(database) }
@@ -144,8 +147,25 @@ public final class Catalog: @unchecked Sendable {
     public func localChildren(_ id: String) throws -> [ItemRecord] { try lock.withLock { try records("SELECT payload FROM items WHERE parent=? AND local=1", text: [id]) } }
     public func hasChildren(_ id: String) throws -> Bool { try lock.withLock { try !strings("SELECT id FROM items WHERE parent=? AND id<>? LIMIT 1", text: [id,id]).isEmpty } }
 
-    private func upsertItem(_ record: ItemRecord, generation: Int?) throws {
+    private static func nameKey(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+    }
+    private func upsertItem(_ proposed: ItemRecord, generation: Int?) throws {
+        var record = proposed
         let old = try itemUnlocked(record.id)
+        var attempt = 0
+        while !(try strings("SELECT id FROM item_names WHERE parent=? AND name=? AND id<>? LIMIT 1", text: [record.parentID,Self.nameKey(record.filename),record.id])).isEmpty {
+            attempt += 1
+            // Never rename/overwrite another sibling, particularly a local-only import.
+            record.filename = ItemRecord.safeName(proposed.filename,
+                identity: String(FolderProjection.digest(record.id).prefix(16)) + (attempt == 1 ? "" : "-\(attempt)"), preserveExtension: !record.isFolder)
+        }
+        // Keep a previously assigned collision suffix when its contender has disappeared.
+        if let old, old.parentID == record.parentID, old.filename != proposed.filename,
+           old.filename == ItemRecord.safeName(proposed.filename, identity: String(FolderProjection.digest(record.id).prefix(16)), preserveExtension: !record.isFolder),
+           try strings("SELECT id FROM item_names WHERE parent=? AND name=? AND id<>? LIMIT 1", text: [old.parentID,Self.nameKey(old.filename),old.id]).isEmpty {
+            record.filename = old.filename
+        }
         let payload = try encoder.encode(record)
         let query = try statement("INSERT OR REPLACE INTO items(id,parent,asset,album,local,generation,payload) VALUES(?,?,?,?,?,?,?)", text: [record.id, record.parentID], blobs: [7: payload])
         defer { sqlite3_finalize(query) }
@@ -154,9 +174,12 @@ public final class Catalog: @unchecked Sendable {
         sqlite3_bind_int(query, 5, record.isLocalOnly ? 1 : 0)
         if let generation { sqlite3_bind_int64(query, 6, Int64(generation)) }
         guard sqlite3_step(query) == SQLITE_DONE else { throw failure() }
+        try run("INSERT OR REPLACE INTO item_names(id,parent,name) VALUES(?,?,?)", text: [record.id,record.parentID,Self.nameKey(record.filename)])
         guard old != record else { return }
         if let old, old.parentID != record.parentID {
-            try run("INSERT INTO events(id,parent,payload) VALUES(?,?,NULL)", text: [record.id,old.parentID])
+            // A move is an update in the working set, including across page boundaries.
+            // Container enumerators translate this old-parent notification to a departure.
+            try run("INSERT INTO events(id,parent,payload) VALUES(?,?,?)", text: [record.id,old.parentID], blobs: [3: payload])
         }
         try run("INSERT INTO events(id,parent,payload) VALUES(?,?,?)", text: [record.id,record.parentID], blobs: [3: payload])
     }
@@ -169,6 +192,7 @@ public final class Catalog: @unchecked Sendable {
             }
         }
         try run("DELETE FROM items WHERE id=?", text: [id])
+        try run("DELETE FROM item_names WHERE id=?", text: [id])
         try run("INSERT INTO events(id,parent,payload) VALUES(?,?,NULL)", text: [id,record.parentID])
     }
 
@@ -185,6 +209,7 @@ public final class Catalog: @unchecked Sendable {
         }
     }
     public var needsServerReset: Bool { get throws { try lock.withLock { try replica().needsReset } } }
+    public var isBootstrapping: Bool { get throws { try lock.withLock { try replica().bootstrapping } } }
     public func acceptedReset(sessionID: String) throws {
         try lock.withLock {
             var replica = try replica(); guard replica.sessionID == sessionID else { throw SyncError.missingAccount }; replica.needsReset = false
@@ -208,7 +233,7 @@ public final class Catalog: @unchecked Sendable {
         return value
     }
     private func clearGeneration(_ generation: Int) throws {
-        for table in ["remote_assets", "remote_albums", "remote_exif", "album_users", "memberships"] {
+        for table in ["remote_assets", "remote_albums", "remote_exif", "album_users", "memberships", "path_work"] {
             try run("DELETE FROM \(table) WHERE generation=?", text: [String(generation)])
         }
     }
@@ -236,9 +261,19 @@ public final class Catalog: @unchecked Sendable {
                     switch event.payload {
                     case .asset(let value):
                         let exif: SyncExif? = try one("SELECT payload FROM remote_exif WHERE generation=? AND asset=?", text: [String(generation),value.id], as: SyncExif.self)
-                        try storeAsset(value.asset(version: event.ack, exif: exif.map { Asset.Exif(fileSizeInByte: $0.fileSizeInByte) }), generation: generation)
+                        var asset = value.asset(version: event.ack, exif: exif.map { Asset.Exif(fileSizeInByte: $0.fileSizeInByte) })
+                        // Native AssetV2 omits paths. Retain the last resolved path until enrichment.
+                        asset.originalPath = try storedAsset(value.id, generation: generation)?.originalPath
+                            ?? storedAsset(value.id, generation: replica.active)?.originalPath
+                        try storeAsset(asset, generation: generation)
+                        if Self.eligible(asset, userID: userID) {
+                            try enqueuePath(value.id, generation: generation)
+                        } else {
+                            try run("DELETE FROM path_work WHERE generation=? AND id=?", text: [String(generation),value.id])
+                        }
                         assets.insert(value.id)
                     case .assetDelete(let id):
+                        try run("DELETE FROM path_work WHERE generation=? AND id=?", text: [String(generation),id])
                         try run("DELETE FROM remote_assets WHERE generation=? AND id=?", text: [String(generation),id])
                         try run("DELETE FROM remote_exif WHERE generation=? AND asset=?", text: [String(generation),id])
                         try run("DELETE FROM memberships WHERE generation=? AND asset=?", text: [String(generation),id])
@@ -287,6 +322,80 @@ public final class Catalog: @unchecked Sendable {
         }
     }
 
+    private func enqueuePath(_ id: String, generation: Int) throws {
+        try run("INSERT OR REPLACE INTO path_work(generation,id,revision,attempts,due) VALUES(?,?,?,0,0)", text: [String(generation),id,UUID().uuidString])
+    }
+    public func pathWork(sessionID: String, userID: String, now: Date = Date(), limit: Int = 100) throws -> [AssetPathWork] {
+        try lock.withLock {
+            let replica = try replica()
+            guard replica.sessionID == sessionID else { throw SyncError.missingAccount }
+            // Replacement generations are enriched after publication; their queued IDs are durable
+            // throughout bootstrap. Never resolve IDs against the old visible generation by accident.
+            while true {
+                let query = try statement("SELECT id,revision FROM path_work WHERE generation=? AND due<=? ORDER BY due,id LIMIT ?",
+                    text: [String(replica.active),String(now.timeIntervalSince1970),String(min(100,max(1,limit)))])
+                var candidates: [AssetPathWork] = []
+                do {
+                    defer { sqlite3_finalize(query) }
+                    while true {
+                        let code = sqlite3_step(query)
+                        if code == SQLITE_DONE { break }
+                        guard code == SQLITE_ROW else { throw failure() }
+                        candidates.append(AssetPathWork(id: string(query,0), generation: replica.active, revision: string(query,1)))
+                    }
+                }
+                var result: [AssetPathWork] = []
+                for candidate in candidates {
+                    if let asset = try storedAsset(candidate.id, generation: replica.active), Self.eligible(asset, userID: userID) {
+                        result.append(candidate)
+                    } else {
+                        try run("DELETE FROM path_work WHERE generation=? AND id=? AND revision=?", text: [String(replica.active),candidate.id,candidate.revision])
+                    }
+                }
+                if !result.isEmpty || candidates.isEmpty { return result }
+            }
+        }
+    }
+    /// Only enrich paths. Native entities remain authoritative for existence, scope and content.
+    /// Revision/session checks reject responses overlapping an update, deletion or replacement reset.
+    public func resolvedPaths(_ responses: [Asset], work: [AssetPathWork], userID: String, sessionID: String, now: Date = Date()) throws {
+        try lock.withLock {
+            try transaction {
+                let replica = try replica()
+                guard replica.sessionID == sessionID else { throw SyncError.missingAccount }
+                let values = Dictionary(responses.map { ($0.id,$0) }, uniquingKeysWith: { first, _ in first })
+                for entry in work {
+                    guard entry.generation == replica.active,
+                          try strings("SELECT revision FROM path_work WHERE generation=? AND id=?", text: [String(entry.generation),entry.id]).first == entry.revision else { continue }
+                    if var asset = try storedAsset(entry.id, generation: entry.generation), Self.eligible(asset, userID: userID),
+                       let response = values[entry.id], Self.eligible(response, userID: userID), response.libraryId == asset.libraryId,
+                       response.checksum == asset.checksum, let path = response.originalPath, !path.isEmpty {
+                        asset.originalPath = path
+                        try storeAsset(asset, generation: entry.generation)
+                        try projectAsset(entry.id, generation: entry.generation, userID: userID)
+                        try run("DELETE FROM path_work WHERE generation=? AND id=? AND revision=?", text: [String(entry.generation),entry.id,entry.revision])
+                    } else { try deferPath(entry, now: now) }
+                }
+                try pruneEvents()
+            }
+        }
+    }
+    private func deferPath(_ entry: AssetPathWork, now: Date) throws {
+        let args = [String(entry.generation),entry.id,entry.revision]
+        let attempts = Int(try strings("SELECT attempts FROM path_work WHERE generation=? AND id=? AND revision=?", text: args).first ?? "0") ?? 0
+        let delay = min(3600, 5 * pow(2, Double(min(attempts,10))))
+        try run("UPDATE path_work SET attempts=attempts+1,due=? WHERE generation=? AND id=? AND revision=?",
+            text: [String(now.timeIntervalSince1970 + delay)] + args)
+    }
+    public func failedPaths(_ work: [AssetPathWork], sessionID: String, now: Date = Date()) throws {
+        try lock.withLock {
+            try transaction {
+                guard try replica().sessionID == sessionID else { throw SyncError.missingAccount }
+                for entry in work { try deferPath(entry, now: now) }
+            }
+        }
+    }
+
     private func storeAsset(_ asset: Asset, generation: Int) throws {
         try run("INSERT OR REPLACE INTO remote_assets(generation,id,payload) VALUES(?,?,?)", text: [String(generation),asset.id], blobs: [3: try encoder.encode(asset)])
     }
@@ -308,17 +417,43 @@ public final class Catalog: @unchecked Sendable {
     private func ownsAlbum(_ id: String, generation: Int, userID: String) throws -> Bool {
         !(try strings("SELECT album FROM album_users WHERE generation=? AND album=? AND user=? AND role='owner'", text: [String(generation),id,userID])).isEmpty
     }
+    private static func eligible(_ asset: Asset, userID: String) -> Bool {
+        asset.ownerId == userID && ["IMAGE", "VIDEO"].contains(asset.type) && !asset.isTrashed && asset.visibility != "locked"
+    }
+    private func pruneFolders(from id: String) throws {
+        var parent = id
+        while var folder = try itemUnlocked(parent), folder.kind == .folder || folder.kind == .externalFolder {
+            let hasChildren = try !strings("SELECT id FROM items WHERE parent=? LIMIT 1", text: [parent]).isEmpty
+            let hasRemote = try !strings("SELECT id FROM items WHERE parent=? AND local=0 LIMIT 1", text: [parent]).isEmpty
+            let next = folder.parentID
+            if !hasChildren { try retireItem(parent) }
+            else if !hasRemote {
+                // Preserve local descendants and the hierarchy they were dropped into.
+                folder.kind = .ignoredFolder
+                try upsertItem(folder, generation: nil)
+            } else { break }
+            parent = next
+        }
+    }
     private func projectAsset(_ id: String, generation: Int, userID: String) throws {
+        let existing = try records("SELECT payload FROM items WHERE asset=?", text: [id])
         var desired: [ItemRecord] = []
-        if let asset = try storedAsset(id, generation: generation), asset.ownerId == userID,
-           ["IMAGE", "VIDEO"].contains(asset.type), !asset.isTrashed, asset.visibility != "locked" {
-            desired.append(ItemRecord.record(asset: asset))
+        if let asset = try storedAsset(id, generation: generation), Self.eligible(asset, userID: userID) {
+            let projection = FolderProjection.folders(for: asset)
+            for folder in projection.folders {
+                try upsertItem(ItemRecord(id: folder.id, parentID: folder.parent, filename: folder.name, kind: folder.kind, modifiedAt: "1"), generation: nil)
+            }
+            var main = ItemRecord.record(asset: asset)
+            main.parentID = projection.folders.last!.id
+            main.filename = ItemRecord.safeName(projection.filename, identity: asset.id, preserveExtension: true)
+            desired.append(main)
             let albums = try strings("SELECT m.album FROM memberships m JOIN album_users u ON u.generation=m.generation AND u.album=m.album JOIN remote_albums a ON a.generation=m.generation AND a.id=m.album WHERE m.generation=? AND m.asset=? AND u.user=? AND u.role='owner'", text: [String(generation),id,userID])
             for album in albums { desired.append(ItemRecord.record(asset: asset, albumID: album)) }
         }
         let keep = Set(desired.map(\.id))
-        for existing in try strings("SELECT id FROM items WHERE asset=?", text: [id]) where !keep.contains(existing) { try retireItem(existing) }
+        for item in existing where !keep.contains(item.id) { try retireItem(item.id) }
         for record in desired { try upsertItem(record, generation: generation) }
+        for parent in Set(existing.map(\.parentID)) { try pruneFolders(from: parent) }
     }
     private func projectAlbum(_ id: String, generation: Int, userID: String, populateMembers: Bool = true) throws {
         let old = try itemUnlocked(ItemRecord.albumID(id))
@@ -350,7 +485,11 @@ public final class Catalog: @unchecked Sendable {
         while true {
             let stale = try strings("SELECT id FROM items WHERE generation IS NOT NULL AND generation<>? LIMIT 256", text: [String(generation)])
             if stale.isEmpty { break }
-            for id in stale { try retireItem(id) }
+            for id in stale {
+                let parent = try itemUnlocked(id)?.parentID
+                try retireItem(id)
+                if let parent { try pruneFolders(from: parent) }
+            }
         }
     }
 
@@ -364,7 +503,9 @@ public final class Catalog: @unchecked Sendable {
                 for generation in generations {
                     for change in changes {
                         switch change {
-                        case .asset(let asset): try storeAsset(asset, generation: generation); assets.insert(asset.id)
+                        case .asset(let asset):
+                            try storeAsset(asset, generation: generation); assets.insert(asset.id)
+                            if asset.originalPath == nil, Self.eligible(asset, userID: userID) { try enqueuePath(asset.id, generation: generation) }
                         case .album(let album):
                             try storeAlbum(SyncAlbum(id: album.id, name: album.albumName, updatedAt: album.updatedAt), generation: generation)
                             for user in album.albumUsers {
@@ -378,9 +519,12 @@ public final class Catalog: @unchecked Sendable {
                             if var asset = try storedAsset(id, generation: generation) {
                                 asset.isTrashed = true; try storeAsset(asset, generation: generation)
                             }
+                            try run("DELETE FROM path_work WHERE generation=? AND id=?", text: [String(generation),id])
                             assets.insert(id)
                         case .replaceAsset(let source, let target):
                             try storeAsset(target, generation: generation)
+                            if target.originalPath == nil { try enqueuePath(target.id, generation: generation) }
+                            try run("DELETE FROM path_work WHERE generation=? AND id=?", text: [String(generation),source])
                             for album in try strings("SELECT album FROM memberships WHERE generation=? AND asset=?", text: [String(generation),source]) {
                                 try membership(album, asset: target.id, present: true, generation: generation)
                             }
@@ -409,7 +553,19 @@ public final class Catalog: @unchecked Sendable {
 
     public func saveLocal(_ record: ItemRecord) throws {
         guard record.isLocalOnly else { throw SyncError.unsupported }
-        try lock.withLock { try transaction { try upsertItem(record, generation: nil) } }
+        try lock.withLock {
+            try transaction {
+                guard let parent = try itemUnlocked(record.parentID), parent.isFolder, parent.kind != .root else { throw SyncError.unsupportedLocation }
+                var ancestor = parent
+                while true {
+                    guard ancestor.id != record.id else { throw SyncError.unsupportedLocation }
+                    if ancestor.parentID == ancestor.id { break }
+                    guard let next = try itemUnlocked(ancestor.parentID) else { throw SyncError.unsupportedLocation }
+                    ancestor = next
+                }
+                try upsertItem(record, generation: nil)
+            }
+        }
     }
     public func removeLocalTree(_ id: String, recursive: Bool) throws -> [ItemRecord] {
         try lock.withLock {
@@ -424,7 +580,7 @@ public final class Catalog: @unchecked Sendable {
 
     private func updateCounts(completed: Bool) throws {
         var status = try stateUnlocked("status", as: SyncStatus.self) ?? SyncStatus()
-        status.assetCount = Int(try strings("SELECT COUNT(*) FROM items WHERE parent=? AND asset IS NOT NULL", text: [ItemRecord.libraryID])[0]) ?? 0
+        status.assetCount = Int(try strings("SELECT COUNT(*) FROM items WHERE asset IS NOT NULL AND album IS NULL", text: [])[0]) ?? 0
         status.albumCount = Int(try strings("SELECT COUNT(*) FROM items WHERE parent=? AND album IS NOT NULL", text: [ItemRecord.albumsID])[0]) ?? 0
         if completed { status.lastSync = Date(); status.syncing = false; status.message = nil }
         try setStateUnlocked("status", value: status)

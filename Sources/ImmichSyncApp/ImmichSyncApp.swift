@@ -37,7 +37,10 @@ struct ImmichSyncApp: App {
     private var lastSignal = Date.distantPast
 
     init() {
-        do { account = try SharedStore.account() } catch { self.error = error.localizedDescription }
+        do {
+            account = try SharedStore.account()
+            if let account { _ = try CredentialStore.read(for: account) }
+        } catch { self.error = error.localizedDescription }
         monitor = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -104,7 +107,7 @@ struct ImmichSyncApp: App {
         busy = true; error = nil
         defer { busy = false }
         var pending: ImmichAPI?
-        var pendingSessionID: String?
+        var pendingAccount: Account?
         var adopted = false
         do {
             let address = try ServerAddress(server, allowHTTP: allowHTTP)
@@ -118,18 +121,20 @@ struct ImmichSyncApp: App {
                 throw NSError(domain: "ImmichSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "Disconnect the current account before signing in to a different server or user."])
             }
             let sessionID = try await authenticated.currentSessionID()
-            pendingSessionID = sessionID
             var connected = Account(id: account?.id ?? UUID().uuidString, serverURL: address.apiURL,
                 userID: login.userId, displayName: login.name, email: login.userEmail,
                 sessionID: sessionID, allowHTTP: allowHTTP)
             connected.paused = account?.paused ?? false
+            pendingAccount = connected
             let previous = account
-            try CredentialStore.save(login.accessToken, sessionID: sessionID)
+            try CredentialStore.save(login.accessToken, for: connected)
             try SharedStore.save(connected)
             account = connected; adopted = true
-            if let previous, let token = try? CredentialStore.read(sessionID: previous.sessionID) {
-                try? await ImmichAPI(serverURL: previous.serverURL, token: { token }).logout()
-                try? CredentialStore.delete(sessionID: previous.sessionID)
+            if let previous, previous.sessionID != connected.sessionID {
+                if let token = try? CredentialStore.read(for: previous) {
+                    try? await ImmichAPI(serverURL: previous.serverURL, token: { token }).logout()
+                }
+                try? CredentialStore.delete(for: previous)
             }
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 NSFileProviderManager.add(domain(for: connected)) { error in
@@ -140,12 +145,12 @@ struct ImmichSyncApp: App {
         } catch is CancellationError {
             if !adopted {
                 try? await pending?.logout()
-                if let pendingSessionID { try? CredentialStore.delete(sessionID: pendingSessionID) }
+                if let pendingAccount { try? CredentialStore.delete(for: pendingAccount) }
             }
         } catch {
             if !adopted {
                 try? await pending?.logout()
-                if let pendingSessionID { try? CredentialStore.delete(sessionID: pendingSessionID) }
+                if let pendingAccount { try? CredentialStore.delete(for: pendingAccount) }
             }
             self.error = error.localizedDescription
         }
@@ -204,10 +209,10 @@ struct ImmichSyncApp: App {
                     if let error { continuation.resume(throwing: error) } else { continuation.resume(returning: url) }
                 }
             }
-            if let token = try? CredentialStore.read(sessionID: account.sessionID) {
+            if let token = try? CredentialStore.read(for: account) {
                 try? await ImmichAPI(serverURL: account.serverURL, token: { token }).logout()
             }
-            try CredentialStore.delete(sessionID: account.sessionID)
+            try CredentialStore.delete(for: account)
             try SharedStore.clearAccount()
             self.account = nil; statusCatalog = nil; status = SyncStatus(); error = nil
             if let keptURL { NSWorkspace.shared.activateFileViewerSelecting([keptURL]) }
@@ -310,7 +315,7 @@ private struct SettingsView: View {
                         TextField("Email address", text: $fields.email).textContentType(.username)
                         SecureField("Password", text: $fields.password).textContentType(.password)
                         Toggle("Allow HTTP on my trusted local network", isOn: $fields.allowHTTP).font(.caption)
-                        Text("Your session is stored in Keychain. Your password is never saved. This build connects to Immich \(SyncContract.serverVersion).")
+                        Text("Your session is stored in a protected file on this Mac. Your password is never saved. This build connects to Immich \(SyncContract.serverVersion).")
                             .font(.caption).foregroundStyle(.secondary)
                         Button(model.account == nil ? "Sign in & add Finder location" : "Sign in again") {
                             Task {
@@ -329,7 +334,7 @@ private struct SettingsView: View {
                 if let error = model.error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
                 VStack(alignment: .leading, spacing: 12) {
                     Text("How your library syncs").font(.headline)
-                    rule("photo.on.rectangle", "All Photos", "Drop images or videos here to upload. Deleting here moves the asset to Immich trash, including its album appearances.")
+                    rule("photo.on.rectangle", "Folder View", "Drop images or videos into Folder View to upload. Immich’s storage template chooses their folders. Server folders cannot be renamed or moved here. Deleting media here moves it to Immich trash, including its album appearances.")
                     rule("rectangle.stack", "Albums", "Create and rename album folders. Deleting a photo here removes it from the album; deleting an album keeps its photos. Albums cannot be nested.")
                     rule("pencil", "Edits preserve the old original", "Edited media becomes a new asset with copied album associations. The previous asset goes to Immich trash. Original filenames cannot be renamed through the current Immich API.")
                     rule("pin", "Always keep available", "Use Finder’s context menu to keep a file or folder downloaded. Unsupported files show a grey ignored badge, stay on this Mac, and are never uploaded.")

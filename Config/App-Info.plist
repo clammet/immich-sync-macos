@@ -16,7 +16,6 @@
     <key>LSUIElement</key><true/>
     <key>NSHumanReadableCopyright</key><string>Immich Sync contributors</string>
     <key>ImmichAppGroup</key><string>$(IMMICH_APP_GROUP)</string>
-    <key>ImmichKeychainGroup</key><string>$(AppIdentifierPrefix)$(IMMICH_KEYCHAIN_GROUP)</string>
     <key>NSLocalNetworkUsageDescription</key><string>Immich Sync connects to your Immich server to sync your photo library.</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

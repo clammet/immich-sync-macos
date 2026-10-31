@@ -10,7 +10,6 @@
     <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleSymbolName</key><string>photo.stack</string>
     <key>ImmichAppGroup</key><string>$(IMMICH_APP_GROUP)</string>
-    <key>ImmichKeychainGroup</key><string>$(AppIdentifierPrefix)$(IMMICH_KEYCHAIN_GROUP)</string>
     <key>NSLocalNetworkUsageDescription</key><string>Immich downloads and uploads your photos and videos on your local server.</string>
     <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>UTExportedTypeDeclarations</key><array><dict>

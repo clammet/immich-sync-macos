@@ -47,8 +47,13 @@ final class ProviderEnumerator: NSObject, NSFileProviderEnumerator {
             // Keep only the last event per identity within this batch (a create may be followed by deletion).
             let matching = changes.changes.filter { container == .workingSet || $0.parentID == ProviderItem.id(container) }
             let relevant = Dictionary(matching.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new }).values
-            observer.didDeleteItems(withIdentifiers: relevant.filter { $0.record == nil }.map { ProviderItem.identifier($0.id) })
-            observer.didUpdate(try relevant.compactMap(\.record).filter { $0.kind != .root }.map(context.item))
+            let containerID = ProviderItem.id(container)
+            observer.didDeleteItems(withIdentifiers: relevant.filter {
+                $0.record == nil || (container != .workingSet && $0.record?.parentID != containerID)
+            }.map { ProviderItem.identifier($0.id) })
+            observer.didUpdate(try relevant.compactMap(\.record).filter {
+                $0.kind != .root && (container == .workingSet || $0.parentID == containerID)
+            }.map(context.item))
             observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(changes.anchor.data), moreComing: changes.more)
         } catch SyncError.invalidAnchor {
             observer.finishEnumeratingWithError(NSError(domain: NSFileProviderErrorDomain, code: NSFileProviderError.syncAnchorExpired.rawValue))

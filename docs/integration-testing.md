@@ -1,18 +1,36 @@
-# Signed integration validation
+# Integration testing
 
-Use a disposable Immich 3.3.5 account/library. These checks require a signed, provisioned app and a live server; local unit tests cannot establish File Provider lifecycle or visual behavior.
+Use macOS 14 or later, FileVault, a signed app and extension with matching Team-ID-prefixed App Groups, and a disposable Immich 3.3.5 account/library. Configure the OAuth redirect as `immich-sync://oauth` for browser sign-in tests.
 
-1. Build both targets with matching App Group and Keychain provisioning. Install in Applications, enable the extension, and confirm a single Finder location appears after sign-in.
-2. Sign in with email/password. Confirm a separate macOS session appears in Immich and that only the token is stored in Keychain. Test rejected credentials, expired/revoked sessions, sign-in again, and cancellation.
-3. Register `immich-sync://oauth` in the configured OAuth provider, then complete browser sign-in. Exercise cancellation, repeated attempts, wrong/missing state, and rejected code exchange. Confirm password-disabled servers work through OAuth.
-4. Begin a large initial sync. Verify metadata streams progressively into the local database without downloading originals. Kill the extension between batches and during acknowledgement. Resume and confirm the original checkpoint progress is reused without missing/duplicated appearances.
-5. Add, edit, trash, restore, and permanently delete test assets on the server. Change album names, ownership, and membership. Confirm subsequent requests receive changes and that idle checks do not re-enumerate assets/albums or invalidate Finder pages.
-6. Force the dedicated session's sync reset. Interrupt the replacement bootstrap and confirm the old visible library and local-only data remain available. Complete the bootstrap and verify only actual changes are published.
-7. Delete the local native catalog while keeping the session token. Confirm the next run requests a fresh native bootstrap instead of resuming from unavailable local data. Reauthenticate during an active stream and verify the old reader cannot commit or acknowledge the new session's state.
-8. Browse thumbnails and open JPEG, HEIC, RAW, and video originals. Verify thumbnails do not hydrate originals and downloaded hashes match source content. Pin a file and album, add new children, then test offline access and on-demand eviction.
-9. Drop unsupported files and nested folders. Verify the grey decoration/accessibility label, no upload, and content survival across restart/reset/remote album removal. Check packages and symlinks without traversing them. Edit/delete ignored files without server requests.
-10. Bulk-upload supported files. Confirm each operation updates only affected local records and no global refresh occurs. Test deduplication, large videos, quota exhaustion, HTTP 413, server downtime, and network interruption.
-11. Edit an original. Kill the extension after upload, association copy, and source trash; verify journal recovery and pin preservation. Change the source concurrently on the server. Confirm conflicts preserve local edits, trash-disabled servers preserve originals, and force deletion is never sent.
-12. Verify album deletion keeps originals, removing album appearances affects only membership, and deleting from All Photos affects every appearance while retaining the asset in Immich trash.
-13. Pause/resume and test login startup. Disconnect while supported uploads or ignored items remain. Confirm downloaded/unsynced data is retained and revealed, and only this Mac's session is revoked. Repeat disconnection offline and manage any remaining server session through Immich.
-14. Test at least two supported macOS releases, VoiceOver, dark appearance, Finder badge sizes, transfer progress, a notarized Developer ID install, and a clean user account. Run performance measurements with representative library/album sizes before defining supported scale targets.
+## Local checks
+
+```sh
+sh scripts/check.sh
+```
+
+Unsigned app and extension build for Apple Silicon and Intel:
+
+```sh
+xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
+  -configuration Debug -destination 'generic/platform=macOS' \
+  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO \
+  ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' build
+```
+
+## Pending integration checks
+
+- [ ] **Installation:** build with the local Apple Development identity and no embedded provisioning profiles. Install in Applications, enable the extension, and confirm one Finder location. Repeat after app/provider restart and in a clean user account.
+- [ ] **Authentication:** test password and browser sign-in, cancellation, rejected credentials, revoked sessions, and reauthentication. Verify OAuth callback/state validation and password-disabled server behavior.
+- [ ] **Credential storage:** verify directory mode `0700`, file mode `0600`, current-user ownership, no extended ACL, and backup exclusion. Check that logs, account metadata, and the catalog contain no tokens or passwords.
+- [ ] **Incremental sync:** bootstrap a large library, then add, edit, trash, restore, and permanently delete assets on the server. Check album and membership changes. Verify idle checks make no path metadata requests.
+- [ ] **Recovery:** interrupt streams and acknowledgements, reset the server session, and rebuild a missing local catalog. Verify checkpoint recovery, visible content retention, and rejection of stale work during reauthentication.
+- [ ] **Folder updates:** upload through Finder, mobile, and web; change storage templates and labels. Verify paths converge, appearance IDs remain stable, and downloaded content and pin settings survive moves.
+- [ ] **Path handling:** test case/Unicode collisions, invalid or unavailable paths, relative paths, and multiple external libraries. Check ownership and locked-asset filtering and external-library read-only behavior.
+- [ ] **Media access:** browse thumbnails, open supported image/video formats, verify download checksums, and test pinned content offline and on-demand eviction.
+- [ ] **Uploads:** test bulk uploads, deduplication, large videos, quota exhaustion, HTTP 413, server downtime, and interrupted transfers.
+- [ ] **Edits:** interrupt upload/copy/trash operations and test recovery, concurrent server edits, pin retention, and trash-disabled behavior.
+- [ ] **Albums and deletion:** verify album creation, rename, membership moves/removal, and deletion. Check that album deletion retains originals and library deletion uses trash.
+- [ ] **Local-only content:** test unsupported files, custom folders, packages, and symlinks. Verify ignored badges, local edits/deletion, and content retention across restarts, resets, and remote folder/album removal.
+- [ ] **Controls and disconnect:** test pause/resume and launch at login. Disconnect online and offline; verify local data retention, credential removal, and session revocation when reachable.
+- [ ] **Platform and accessibility:** test two supported macOS releases, VoiceOver, dark appearance, badges, transfer progress, and a notarized Developer ID release.
+- [ ] **Performance:** record initial indexing, idle checks, bulk changes, and request counts with representative library and album sizes.
