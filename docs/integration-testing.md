@@ -2,6 +2,11 @@
 
 Use macOS 14 or later, FileVault, a signed app and extension with matching Team-ID-prefixed App Groups, and a disposable Immich 3.3.5 account/library. Configure the OAuth redirect as `immich-sync://oauth` for browser sign-in tests.
 
+## Verified locally
+
+- The main app and extension build and sign for Apple Silicon and Intel with matching Team IDs, sandbox entitlements, Hardened Runtime, and no provisioning profiles.
+- An isolated signed File Provider diagnostic reads a dummy token through the production credential store, enumerates in Finder, and supplies a readable file.
+
 ## Local checks
 
 ```sh
@@ -17,9 +22,22 @@ xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
   ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' build
 ```
 
+## Signed build
+
+Set `Config/Local.xcconfig` as described in the README, then build and verify:
+
+```sh
+xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
+  -configuration Debug -destination 'generic/platform=macOS' \
+  -derivedDataPath build/DerivedData build
+python3 scripts/verify-signing.py 'build/DerivedData/Build/Products/Debug/Immich Sync.app'
+```
+
+The verification command checks the app and embedded extension signatures, matching Team-ID-prefixed App Groups, sandbox and network entitlements, Hardened Runtime, and absence of provisioning profiles.
+
 ## Pending integration checks
 
-- [ ] **Installation:** build with the local Apple Development identity and no embedded provisioning profiles. Install in Applications, enable the extension, and confirm one Finder location. Repeat after app/provider restart and in a clean user account.
+- [ ] **Installation:** install the main app in Applications, enable the extension, and confirm one Finder location. Test Open in Finder, app/provider restarts, and a clean user account.
 - [ ] **Authentication:** test password and browser sign-in, cancellation, rejected credentials, revoked sessions, and reauthentication. Verify OAuth callback/state validation and password-disabled server behavior.
 - [ ] **Credential storage:** verify directory mode `0700`, file mode `0600`, current-user ownership, no extended ACL, and backup exclusion. Check that logs, account metadata, and the catalog contain no tokens or passwords.
 - [ ] **Incremental sync:** bootstrap a large library, then add, edit, trash, restore, and permanently delete assets on the server. Check album and membership changes. Verify idle checks make no path metadata requests.

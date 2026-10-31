@@ -182,9 +182,21 @@ struct ImmichSyncApp: App {
     func openFinder() {
         guard let account, let manager = NSFileProviderManager(for: domain(for: account)) else { return }
         manager.getUserVisibleURL(for: .rootContainer) { [weak self] url, error in
-            Task { @MainActor in
-                if let url { NSWorkspace.shared.open(url) }
-                else { self?.error = error?.localizedDescription ?? "The Finder location is not ready. Check the extension is enabled in System Settings." }
+            Task { @MainActor [weak self] in
+                guard let url else {
+                    self?.error = error?.localizedDescription ?? "The Finder location is not ready. Check the extension is enabled in System Settings."
+                    return
+                }
+                guard url.startAccessingSecurityScopedResource() else {
+                    self?.error = "The Finder location could not be opened. Open Finder and select Immich under Locations."
+                    return
+                }
+                NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
+                    url.stopAccessingSecurityScopedResource()
+                    if let error {
+                        Task { @MainActor [weak self] in self?.error = error.localizedDescription }
+                    }
+                }
             }
         }
     }

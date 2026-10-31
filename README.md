@@ -50,13 +50,13 @@ Disconnecting preserves downloaded and unsynced files, removes the local credent
 - Media edits and library deletions require Immich trash with a positive retention period. Permanent deletion is not implemented.
 - Finder tags, resource forks, new Live Photo pairing, and rendered non-destructive Immich edits are not synchronized.
 - Faces, share links, and stacks are not transferred to edited replacements.
-- Signed Finder integration, live-server workflows, and OAuth integration testing are pending.
+- Full-app Finder workflows, live-server sync, and OAuth integration testing are pending. An isolated Finder diagnostic has verified shared credential access, enumeration, and file retrieval.
 
 ## Build and run
 
 1. Install full Xcode and select it as the active developer toolchain.
 2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. Set your development team and a unique bundle identifier.
-3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`. Both targets use Apple Development signing and the same Team-ID-prefixed App Group.
+3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`. Both targets use manual Apple Development signing, no provisioning profile, and the same Team-ID-prefixed App Group.
 4. Install the app in Applications, launch it, enable the extension if prompted, and connect through the menu bar item.
 
 Run local build, test, and project checks with:
@@ -65,6 +65,6 @@ Run local build, test, and project checks with:
 sh scripts/check.sh
 ```
 
-See [architecture](docs/architecture.md) for implementation details and [integration testing](docs/integration-testing.md) for bundle checks and the live test checklist.
+See [architecture](docs/architecture.md) for implementation details and [integration testing](docs/integration-testing.md) for signed bundle verification and the live test checklist.
 
 This project is an independent Immich client.
