@@ -50,7 +50,7 @@ Disconnecting preserves downloaded and unsynced files, removes the local credent
 - Media edits and library deletions require Immich trash with a positive retention period. Permanent deletion is not implemented.
 - Finder tags, resource forks, new Live Photo pairing, and rendered non-destructive Immich edits are not synchronized.
 - Faces, share links, and stacks are not transferred to edited replacements.
-- Full-app Finder workflows, live-server sync, and OAuth integration testing are pending. An isolated Finder diagnostic has verified shared credential access, enumeration, and file retrieval.
+- A disposable Immich 3.3.5 integration suite covers production sync and mutations. A signed main-app/provider smoke test verifies sign-in, enumeration, original retrieval, and disconnect. Visual Finder workflows and OAuth integration testing remain pending; see the integration guide.
 
 ## Build and run
 

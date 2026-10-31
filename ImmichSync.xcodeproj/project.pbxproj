@@ -23,6 +23,12 @@
 			"path" = "Sources/ImmichSyncApp/ImmichSyncApp.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
+		"BF30E8629D9CF6ACD8D0F45E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Sources/ImmichSyncApp/IntegrationSmoke.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
 		"9A0A5F26579B9844E89BEC72" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -216,12 +222,17 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "B1D4DE47BD7B23328E6B889F";
 		};
+		"6C79045B1ACFD4317F94205D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "BF30E8629D9CF6ACD8D0F45E";
+		};
 		"529CD44801B00481A08F29A3" = {
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"8FCED4268457A0A0CBAFCD41",
 				"51A133334C1AE57694ED3099",
+				"6C79045B1ACFD4317F94205D",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -359,6 +370,7 @@
 			"children" = (
 				"F834DDFE643DAF6A79D613AC",
 				"B1D4DE47BD7B23328E6B889F",
+				"BF30E8629D9CF6ACD8D0F45E",
 				"9A0A5F26579B9844E89BEC72",
 				"EA4D78EFCFA9D956B8C092F2",
 				"13321CFE102D35F97F749D97",

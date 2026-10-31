@@ -14,6 +14,7 @@ let package = Package(
         .target(name: "ImmichCore", dependencies: ["CSQLite"]),
         .target(name: "ImmichFileProvider", dependencies: ["ImmichCore"]),
         .executableTarget(name: "ImmichSyncApp", dependencies: ["ImmichCore"]),
-        .testTarget(name: "ImmichCoreTests", dependencies: ["ImmichCore", "ImmichFileProvider"])
+        .testTarget(name: "ImmichCoreTests", dependencies: ["ImmichCore", "ImmichFileProvider"]),
+        .testTarget(name: "LiveIntegrationTests", dependencies: ["ImmichCore"])
     ]
 )

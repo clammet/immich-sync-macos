@@ -1,0 +1,27 @@
+# Applied to the unmodified official v3.3.5 release stack.
+name: immich-sync-integration
+services:
+  immich-server:
+    container_name: immich-sync-integration-server
+    ports: !override
+      - '127.0.0.1:${IMMICH_TEST_PORT:-22830}:2283'
+    volumes:
+      - ./external:/integration-external:ro
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: 'no'
+  immich-machine-learning:
+    container_name: immich-sync-integration-ml
+    restart: 'no'
+  redis:
+    container_name: immich-sync-integration-redis
+    restart: 'no'
+  database:
+    container_name: immich-sync-integration-postgres
+    restart: 'no'
+volumes:
+  upload:
+  database:

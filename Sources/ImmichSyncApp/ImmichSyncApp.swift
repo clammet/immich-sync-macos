@@ -51,6 +51,11 @@ struct ImmichSyncApp: App {
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--integration-smoke") {
+            Task { await IntegrationSmoke.run(model: self) }
+        }
+        #endif
     }
 
     var stateTitle: String {
