@@ -48,8 +48,9 @@ public final class ProviderItem: NSObject, NSFileProviderItem {
 }
 public enum ProviderErrors {
     public static func map(_ error: Error,newImport: Bool = false,identifier: NSFileProviderItemIdentifier? = nil) -> Error {
+        let cause = MutationFailure.cause(of: error)
         let code: NSFileProviderError.Code
-        switch error {
+        switch cause {
         case SyncError.unsupported: code = newImport ? .excludedFromSync : .cannotSynchronize
         case SyncError.unsupportedLocation, SyncError.conflict, SyncError.mediaMappingRequired, SyncError.mediaNotIndexed, SyncError.ambiguousMedia: code = .cannotSynchronize
         case SyncError.missingAccount, SyncError.credentialStorage: code = .notAuthenticated
@@ -64,7 +65,7 @@ public enum ProviderErrors {
             if let identifier { return NSError.fileProviderErrorForNonExistentItem(withIdentifier: identifier) }; code = .noSuchItem
         case is CancellationError: return NSError(domain: NSCocoaErrorDomain,code: NSUserCancelledError)
         default:
-            if (error as NSError).code == NSURLErrorCancelled { return NSError(domain: NSCocoaErrorDomain,code: NSUserCancelledError) }
+            if (cause as NSError).code == NSURLErrorCancelled { return NSError(domain: NSCocoaErrorDomain,code: NSUserCancelledError) }
             code = .serverUnreachable
         }
         return NSError(domain: NSFileProviderErrorDomain,code: code.rawValue,userInfo: [NSLocalizedDescriptionKey:error.localizedDescription,NSUnderlyingErrorKey:error])

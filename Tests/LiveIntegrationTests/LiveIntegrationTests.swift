@@ -31,10 +31,10 @@ final class LiveIntegrationTests: XCTestCase {
             let account = Account(serverURL: address.apiURL,userID: user.id,displayName: username,email: username,sessionID: UUID().uuidString,allowHTTP: true)
             let engine = try SyncEngine(catalog: catalog,remote: api,account: account)
             try Data("offline edit".utf8).write(to: content)
-            do { _ = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: content,progress: Progress()); XCTFail("Expected server conflict") } catch SyncError.conflict {}
+            do { _ = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: content,progress: Progress()); XCTFail("Expected server conflict") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
             XCTAssertEqual(try catalog.recoveryOperations().count,1)
-            do { _ = try await api.upload(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress()); XCTFail("Expected conditional write rejection") } catch SyncError.conflict {}
-            do { try await api.delete(file); XCTFail("Expected conditional delete rejection") } catch SyncError.conflict {}
+            do { _ = try await api.upload(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress()); XCTFail("Expected conditional write rejection") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
+            do { try await api.delete(file); XCTFail("Expected conditional delete rejection") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
             let moved = try await api.move(newer,parent: folder,name: "renamed.txt")
             XCTAssertEqual(moved.fileID,file.fileID)
             let link = try await api.createLink(moved); XCTAssertNotNil(link.host)

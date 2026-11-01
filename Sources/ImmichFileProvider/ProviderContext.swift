@@ -47,6 +47,7 @@ final class ProviderContext: @unchecked Sendable {
     func recordError(_ error: Error) {
         var status = (try? engine.catalog.state("status", as: SyncStatus.self)) ?? SyncStatus()
         status.message = error.localizedDescription
+        status.mutationOutcome = (error as? MutationFailure)?.outcome
         try? engine.catalog.setState("status", value: status)
     }
 }

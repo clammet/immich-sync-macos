@@ -175,41 +175,53 @@ public final class OpenCloudAPI: OpenCloudRemote, @unchecked Sendable {
                     progress: progress, checkpointURL: checkpointURL)
     }
     public func makeDirectory(parent: CloudFile, name: String) async throws -> CloudFile {
-        try RemotePath.validate([name])
-        guard parent.isDirectory else { throw SyncError.unsupportedLocation }
-        var r = try request(url: parent.url.appendingPathComponent(name), method: "MKCOL")
-        r.setValue("*", forHTTPHeaderField: "If-None-Match")
-        let (_,response) = try await session.data(for: r)
-        if (response as? HTTPURLResponse)?.statusCode == 405 { throw SyncError.conflict }
-        let http = try HTTPClient.validate(response)
-        guard http.statusCode == 201 else { throw SyncError.invalidResponse }
-        let folder = try await properties(space: parent.space,path: parent.path + [name])
-        guard folder.isDirectory else { throw SyncError.conflict }
-        return folder
+        var outcome = MutationOutcome.notSent
+        do {
+            try RemotePath.validate([name])
+            guard parent.isDirectory else { throw SyncError.unsupportedLocation }
+            var r = try request(url: parent.url.appendingPathComponent(name), method: "MKCOL")
+            r.setValue("*", forHTTPHeaderField: "If-None-Match")
+            outcome = .uncertain
+            let (_,response) = try await session.data(for: r)
+            if (response as? HTTPURLResponse)?.statusCode == 405 { throw MutationFailure(outcome: .rejected,underlyingError: SyncError.conflict) }
+            let http = try MutationFailure.validate(response)
+            guard http.statusCode == 201 else { throw SyncError.invalidResponse }
+            let folder = try await properties(space: parent.space,path: parent.path + [name])
+            guard folder.isDirectory else { throw SyncError.conflict }
+            return folder
+        } catch { throw MutationFailure.wrapping(error,outcome: outcome) }
     }
     public func move(_ file: CloudFile, parent: CloudFile, name: String) async throws -> CloudFile {
-        try RemotePath.validate([name])
-        guard parent.isDirectory, file.space.id == parent.space.id, !file.path.isEmpty,
-              !(file.isDirectory && RemotePath.contains(file.path,parent.path)) else { throw SyncError.unsupportedLocation }
-        var r = try request(url: file.url,method: "MOVE")
-        r.setValue(try Self.condition(file.etag), forHTTPHeaderField: "If-Match")
-        r.setValue(parent.url.appendingPathComponent(name).absoluteString, forHTTPHeaderField: "Destination")
-        r.setValue("F", forHTTPHeaderField: "Overwrite")
-        let (_,response) = try await session.data(for: r)
-        let http = try HTTPClient.validate(response)
-        guard [201,204].contains(http.statusCode) else { throw SyncError.invalidResponse }
-        let moved = try await properties(space: parent.space,path: parent.path + [name])
-        guard moved.fileID == file.fileID else { throw SyncError.conflict }
-        return moved
+        var outcome = MutationOutcome.notSent
+        do {
+            try RemotePath.validate([name])
+            guard parent.isDirectory, file.space.id == parent.space.id, !file.path.isEmpty,
+                  !(file.isDirectory && RemotePath.contains(file.path,parent.path)) else { throw SyncError.unsupportedLocation }
+            var r = try request(url: file.url,method: "MOVE")
+            r.setValue(try Self.condition(file.etag), forHTTPHeaderField: "If-Match")
+            r.setValue(parent.url.appendingPathComponent(name).absoluteString, forHTTPHeaderField: "Destination")
+            r.setValue("F", forHTTPHeaderField: "Overwrite")
+            outcome = .uncertain
+            let (_,response) = try await session.data(for: r)
+            let http = try MutationFailure.validate(response)
+            guard [201,204].contains(http.statusCode) else { throw SyncError.invalidResponse }
+            let moved = try await properties(space: parent.space,path: parent.path + [name])
+            guard moved.fileID == file.fileID else { throw SyncError.conflict }
+            return moved
+        } catch { throw MutationFailure.wrapping(error,outcome: outcome) }
     }
     public func delete(_ file: CloudFile) async throws {
-        guard !file.path.isEmpty else { throw SyncError.unsupportedLocation }
-        var r = try request(url: file.url,method: "DELETE")
-        r.setValue(try Self.condition(file.etag), forHTTPHeaderField: "If-Match")
-        let (_,response) = try await session.data(for: r)
-        let http = try HTTPClient.validate(response)
-        // A 207 may contain individual failures. Do not report deletion as successful.
-        guard [200,204].contains(http.statusCode) else { throw SyncError.invalidResponse }
+        var outcome = MutationOutcome.notSent
+        do {
+            guard !file.path.isEmpty else { throw SyncError.unsupportedLocation }
+            var r = try request(url: file.url,method: "DELETE")
+            r.setValue(try Self.condition(file.etag), forHTTPHeaderField: "If-Match")
+            outcome = .uncertain
+            let (_,response) = try await session.data(for: r)
+            let http = try MutationFailure.validate(response)
+            // A 207 may contain individual failures. Do not report deletion as successful.
+            guard [200,204].contains(http.statusCode) else { throw SyncError.invalidResponse }
+        } catch { throw MutationFailure.wrapping(error,outcome: outcome) }
     }
     public func createLink(_ file: CloudFile) async throws -> URL {
         struct Permission: Decodable { struct Link: Decodable { let webUrl: URL }; let link: Link }

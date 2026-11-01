@@ -70,7 +70,7 @@ class ContainerTestCase: XCTestCase {
     func expectConflict(_ operation: () async throws -> Void,
                         file: StaticString = #filePath, line: UInt = #line) async throws {
         do { try await operation(); XCTFail("Expected a conditional conflict", file: file, line: line) }
-        catch SyncError.conflict { }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
     }
     func immichLogin(email: String? = nil) async throws -> (ImmichAPI, SessionLogin) {
         let url = try loopback("IMMICH_TEST_SERVER")
@@ -107,11 +107,16 @@ final class ContainerEndToEndTests: ContainerTestCase {
             _ = try await interrupted.modify(id: original.id,baseContentVersion: original.contentVersion,
                                              filename: nil,parentID: nil,contents: source,progress: Progress())
             XCTFail("Expected the first accepted PATCH response to be lost")
-        } catch is URLError { }
+        } catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.interrupted)
+            XCTAssertEqual((error as? MutationFailure)?.recoveryAvailable,true)
+            guard MutationFailure.cause(of: error) is URLError else { throw error }
+        }
         try FileManager.default.removeItem(at: source)
         let reopened = try Catalog(url: work.appendingPathComponent("catalog.sqlite"))
         let pending = try XCTUnwrap(reopened.recoveryOperations().first)
         XCTAssertNil(pending.uploaded)
+        XCTAssertEqual(pending.issue?.outcome,.interrupted)
         let recovery = reopened.localDirectory.appendingPathComponent(pending.id)
         let checkpoint = try JSONDecoder().decode(TUSUploadCheckpoint.self,from: Data(contentsOf: recovery.appendingPathComponent("upload.json")))
         XCTAssertNotNil(checkpoint.location)
@@ -151,6 +156,7 @@ final class ContainerEndToEndTests: ContainerTestCase {
         let reopened = try Catalog(url: work.appendingPathComponent("catalog.sqlite"))
         let pending = try XCTUnwrap(reopened.recoveryOperations().first)
         let uploaded = try XCTUnwrap(pending.uploaded)
+        XCTAssertEqual(pending.issue?.outcome,.uploaded)
         XCTAssertEqual(uploaded.id, original.id)
         XCTAssertNotEqual(uploaded.etag, original.remote?.etag)
         let preserved = reopened.localDirectory.appendingPathComponent(pending.id)
@@ -265,7 +271,7 @@ final class ContainerEndToEndTests: ContainerTestCase {
                               replacing: original.remote, progress: Progress())
         var rejected = false
         do { try await api.delete(try XCTUnwrap(original.remote)) }
-        catch SyncError.conflict { rejected = true }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }; rejected = true }
         // Strict expected failures keep the upstream safety gap visible and fail
         // on an unexpected pass when a future server release fixes the behavior.
         XCTExpectFailure("OpenCloud 9.0.0 ignores If-Match on DELETE; a newer revision can be deleted") {
@@ -279,7 +285,7 @@ final class ContainerEndToEndTests: ContainerTestCase {
         do {
             _ = try await api.upload(parent: folder.remote!, name: original.filename, contents: content(Data("new create".utf8)),
                                   replacing: nil, progress: Progress())
-        } catch SyncError.conflict { rejected = true }
+        } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }; rejected = true }
         XCTExpectFailure("OpenCloud 9.0.0 ignores If-None-Match on TUS creation; a create can overwrite an existing file") {
             XCTAssertTrue(rejected, "The server must reject creation at an occupied path")
         }
@@ -291,7 +297,7 @@ final class ContainerEndToEndTests: ContainerTestCase {
                               replacing: original.remote, progress: Progress())
         var rejected = false
         do { _ = try await api.move(try XCTUnwrap(original.remote), parent: folder.remote!, name: "moved-newer.txt") }
-        catch SyncError.conflict { rejected = true }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }; rejected = true }
         XCTExpectFailure("OpenCloud 9.0.0 ignores If-Match on MOVE; a newer revision can be moved") {
             XCTAssertTrue(rejected, "The server must reject a stale conditional MOVE")
         }
@@ -421,7 +427,7 @@ final class ContainerImmichOfflineTests: ContainerTestCase {
         do {
             _ = try await session.data(from: url.appendingPathComponent("api/server/ping"))
             XCTFail("Runner must stop the Immich container before this phase")
-        } catch is URLError { }
+        } catch { guard MutationFailure.cause(of: error) is URLError else { throw error } }
         let original = try await create("ordinary.txt", bytes: Data("without Immich".utf8))
         let edited = try await engine.modify(id: original.id, baseContentVersion: original.contentVersion,
                                             filename: "renamed.txt", parentID: nil,

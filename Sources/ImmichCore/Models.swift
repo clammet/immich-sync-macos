@@ -18,7 +18,7 @@ public enum SyncError: Error, LocalizedError {
         case .http(let code, _): return "The server returned HTTP \(code)." + (code == 401 ? " Sign in again." : "")
         case .invalidResponse: return "The server returned an incomplete or unexpected response. Cached files and pending edits are preserved."
         case .invalidAnchor: return "Finder must restart enumeration from the current catalog."
-        case .conflict: return "The item or destination changed on OpenCloud. The server copy was kept and your pending edit is preserved in Recovery."
+        case .conflict: return "The item or destination changed on OpenCloud."
         case .missingItem: return "The item no longer exists or is not accessible."
         case .database(let message): return "The local sync database could not be accessed: \(message)"
         case .credentialStorage: return "Saved credentials could not be accessed. Reconnect in Settings."

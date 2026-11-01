@@ -36,6 +36,7 @@ public struct PendingEdit: Codable, Sendable {
     public let baseVersion: Data?
     public let createdAt: Date
     public var uploaded: CloudFile?
+    public var issue: MutationIssue?
 }
 
 public final class SyncEngine: @unchecked Sendable {
@@ -56,7 +57,7 @@ public final class SyncEngine: @unchecked Sendable {
         var status = try catalog.state("status", as: SyncStatus.self) ?? SyncStatus()
         if !force, let last = status.lastSync, Date().timeIntervalSince(last) < SyncContract.interval { return false }
         let before = try catalog.anchor()
-        status.syncing = true; status.message = nil
+        status.syncing = true; status.message = nil; status.mutationOutcome = nil
         try catalog.setState("status",value: status)
         do {
             let token = try catalog.beginSnapshot()
@@ -147,6 +148,22 @@ public final class SyncEngine: @unchecked Sendable {
     private func finish(_ edit: PendingEdit) throws {
         try catalog.finishOperation(edit.id)
         try? FileManager.default.removeItem(at: catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true))
+        if let issue = edit.issue, var status = try? catalog.state("status",as: SyncStatus.self), status.message == issue.message {
+            status.message = nil; status.mutationOutcome = nil
+            try? catalog.setState("status",value: status)
+        }
+    }
+    private func failure(_ error: Error, edit: PendingEdit? = nil, outcome: MutationOutcome) -> MutationFailure {
+        let observed = MutationFailure.wrapping(error,outcome: outcome)
+        let uploaded = edit?.hash != nil && edit?.uploaded != nil
+        let retained = edit.map { $0.hash != nil && FileManager.default.fileExists(atPath: contentURL($0).path) } ?? false
+        let failure = MutationFailure(outcome: uploaded ? .uploaded : observed.outcome,
+                                      underlyingError: observed.underlyingError,recoveryAvailable: retained)
+        if var edit { edit.issue = failure.issue; try? save(edit) }
+        var status = (try? catalog.state("status",as: SyncStatus.self)) ?? SyncStatus()
+        status.message = failure.localizedDescription; status.mutationOutcome = failure.outcome
+        try? catalog.setState("status",value: status)
+        return failure
     }
     public func create(parentID: String, filename: String, directory: Bool, contents: URL?, progress: Progress) async throws -> ItemRecord {
         try await gate.acquire(); defer { Task { await gate.release() } }
@@ -155,19 +172,23 @@ public final class SyncEngine: @unchecked Sendable {
         guard directory || contents != nil else { throw SyncError.unsupported }
         // Stage before checking connectivity, pause, or parent availability.
         var edit = try stage(sourceID: nil,parentID: parentID,filename: filename,contents: contents,baseVersion: nil)
-        try check()
-        let parent = try await current(catalog.item(parentID))
-        let file: CloudFile
-        if let uploaded = edit.uploaded {
-            file = try await remote.properties(space: uploaded.space,path: uploaded.path)
-            guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
-        } else {
-            file = try await directory ? remote.makeDirectory(parent: parent,name: filename) : remote.upload(parent: parent,name: filename,contents: contentURL(edit),replacing: nil,progress: progress,checkpointURL: uploadCheckpointURL(edit))
-            edit.uploaded = file; try save(edit)
-        }
-        let record = try catalog.commit(file,parentID: parentID)
-        try finish(edit)
-        return record
+        var outcome = MutationOutcome.notSent
+        do {
+            try check()
+            let parent = try await current(catalog.item(parentID))
+            let file: CloudFile
+            if let uploaded = edit.uploaded {
+                file = try await remote.properties(space: uploaded.space,path: uploaded.path)
+                guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
+            } else {
+                outcome = .uncertain
+                file = try await directory ? remote.makeDirectory(parent: parent,name: filename) : remote.upload(parent: parent,name: filename,contents: contentURL(edit),replacing: nil,progress: progress,checkpointURL: uploadCheckpointURL(edit))
+                edit.uploaded = file; try save(edit)
+            }
+            let record = try catalog.commit(file,parentID: parentID)
+            try finish(edit)
+            return record
+        } catch { throw failure(error,edit: edit,outcome: outcome) }
     }
     public func modify(id: String, baseContentVersion: Data, filename: String?, parentID: String?, contents: URL?, progress: Progress) async throws -> ItemRecord {
         try await gate.acquire(); defer { Task { await gate.release() } }
@@ -178,52 +199,63 @@ public final class SyncEngine: @unchecked Sendable {
         let targetName = filename ?? cached?.remote?.name ?? "Recovered edit"
         if let filename { try RemotePath.validate([filename]) }
         var edit = try stage(sourceID: id,parentID: targetParent,filename: targetName,contents: contents,baseVersion: baseContentVersion)
-        try check()
-        guard let record = cached, let known = record.remote, !known.path.isEmpty else { throw SyncError.conflict }
-        var file: CloudFile
-        if let uploaded = edit.uploaded {
-            file = try await remote.properties(space: uploaded.space,path: uploaded.path)
-            guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
-        } else {
-            if contents != nil, FileManager.default.fileExists(atPath: uploadCheckpointURL(edit).path) {
-                // A TUS session may have changed the server's processing ETag.
-                // Resume only the checkpoint bound to this exact base and bytes.
-                file = known
-                guard let base = String(data: baseContentVersion,encoding: .utf8) else { throw SyncError.invalidResponse }
-                file.etag = try OpenCloudAPI.condition(base)
+        var outcome = MutationOutcome.notSent
+        do {
+            try check()
+            guard let record = cached, let known = record.remote, !known.path.isEmpty else { throw SyncError.conflict }
+            var file: CloudFile
+            if let uploaded = edit.uploaded {
+                file = try await remote.properties(space: uploaded.space,path: uploaded.path)
+                guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
             } else {
-                do { file = try await current(record,version: baseContentVersion) }
-                catch SyncError.missingItem { throw SyncError.conflict }
+                if contents != nil, FileManager.default.fileExists(atPath: uploadCheckpointURL(edit).path) {
+                    // A TUS session may have changed the server's processing ETag.
+                    // Resume only the checkpoint bound to this exact base and bytes.
+                    file = known
+                    guard let base = String(data: baseContentVersion,encoding: .utf8) else { throw SyncError.invalidResponse }
+                    file.etag = try OpenCloudAPI.condition(base)
+                } else {
+                    do { file = try await current(record,version: baseContentVersion) }
+                    catch SyncError.missingItem { throw SyncError.conflict }
+                }
+                if contents != nil {
+                    let originalParent = try await current(catalog.item(record.parentID))
+                    outcome = .uncertain
+                    file = try await remote.upload(parent: originalParent,name: known.name,contents: contentURL(edit),replacing: file,progress: progress,checkpointURL: uploadCheckpointURL(edit))
+                    edit.uploaded = file; try save(edit)
+                }
             }
-            if contents != nil {
-                let originalParent = try await current(catalog.item(record.parentID))
-                file = try await remote.upload(parent: originalParent,name: known.name,contents: contentURL(edit),replacing: file,progress: progress,checkpointURL: uploadCheckpointURL(edit))
+            let parent = try await current(catalog.item(targetParent))
+            let name = filename == nil || filename == record.filename ? known.name : targetName
+            if !RemotePath.equal(file.path,parent.path + [name]) {
+                outcome = .uncertain
+                file = try await remote.move(file,parent: parent,name: name)
                 edit.uploaded = file; try save(edit)
             }
-        }
-        let parent = try await current(catalog.item(targetParent))
-        let name = filename == nil || filename == record.filename ? known.name : targetName
-        if !RemotePath.equal(file.path,parent.path + [name]) {
-            file = try await remote.move(file,parent: parent,name: name)
-            edit.uploaded = file; try save(edit)
-        }
-        let updated = try catalog.commit(file,parentID: targetParent)
-        try finish(edit)
-        return updated
+            let updated = try catalog.commit(file,parentID: targetParent)
+            try finish(edit)
+            return updated
+        } catch { throw failure(error,edit: edit,outcome: outcome) }
     }
     public func delete(id: String, baseContentVersion: Data?, recursive: Bool) async throws {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        try check()
-        let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
-        let record: ItemRecord
-        do { record = try catalog.item(id) } catch SyncError.missingItem { return }
-        let descendants = try catalog.descendants([id])
-        let ids = Set(descendants.map(\.id))
-        guard recursive || descendants.count <= 1 else { throw SyncError.unsupportedLocation }
-        guard try !catalog.recoveryOperations().contains(where: { ids.contains($0.sourceID ?? "") || ids.contains($0.parentID) }) else { throw SyncError.conflict }
-        let file = try await current(record,version: baseContentVersion ?? record.contentVersion)
-        do { try await remote.delete(file) } catch SyncError.missingItem { }
-        try catalog.removeTree(id)
+        var outcome = MutationOutcome.notSent
+        do {
+            try check()
+            let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
+            let record: ItemRecord
+            do { record = try catalog.item(id) } catch SyncError.missingItem { return }
+            let descendants = try catalog.descendants([id])
+            let ids = Set(descendants.map(\.id))
+            guard recursive || descendants.count <= 1 else { throw SyncError.unsupportedLocation }
+            guard try !catalog.recoveryOperations().contains(where: { ids.contains($0.sourceID ?? "") || ids.contains($0.parentID) }) else { throw SyncError.conflict }
+            let file = try await current(record,version: baseContentVersion ?? record.contentVersion)
+            outcome = .uncertain
+            do { try await remote.delete(file) } catch {
+                if case SyncError.missingItem = MutationFailure.cause(of: error) { } else { throw error }
+            }
+            try catalog.removeTree(id)
+        } catch { throw failure(error,outcome: outcome) }
     }
     public func createSharingLink(id: String) async throws -> URL { try check(); return try await remote.createLink(current(catalog.item(id))) }
     public func sharingPage(id: String) async throws -> URL { try check(); return try await remote.webURL(current(catalog.item(id))) }

@@ -103,8 +103,8 @@ final class APITests: XCTestCase {
             }
         }
         let moved = try await api.move(file,parent: parent,name: "new.txt"); XCTAssertEqual(moved.fileID,"file")
-        do { try await api.delete(file); XCTFail("Expected stale delete") } catch SyncError.conflict {}
-        do { _ = try await api.makeDirectory(parent: parent,name: "exists"); XCTFail("Expected collision") } catch SyncError.conflict {}
+        do { try await api.delete(file); XCTFail("Expected stale delete") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
+        do { _ = try await api.makeDirectory(parent: parent,name: "exists"); XCTFail("Expected collision") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         XCTAssertEqual(methods,["MOVE","PROPFIND","DELETE","MKCOL"])
     }
     func testTUSCreatesConditionallyAndNeverReplaysRejectedMutations() async throws {
@@ -122,13 +122,17 @@ final class APITests: XCTestCase {
                            "filename " + Data("data.bin".utf8).base64EncodedString() + ",checksum " + Data("SHA1 a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd".utf8).base64EncodedString())
             return (412,[:],Data())
         }
-        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: nil,progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
+        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: nil,progress: Progress()); XCTFail("Expected collision") }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.rejected)
+            guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }
+        }
         XCTAssertEqual(requests,1)
         StubProtocol.handler = { r in
             XCTAssertEqual(r.value(forHTTPHeaderField: "If-Match"),"\"v1\""); XCTAssertNil(r.value(forHTTPHeaderField: "If-None-Match"))
             return (412,[:],Data())
         }
-        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: cloud("file",["data.bin"]),progress: Progress()); XCTFail("Expected stale update") } catch SyncError.conflict {}
+        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: cloud("file",["data.bin"]),progress: Progress()); XCTFail("Expected stale update") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
     }
     func testCreateSharingLinksForFilesAndSpaceRootsUsesLibreGraph() async throws {
         let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())

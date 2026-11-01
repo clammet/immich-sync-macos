@@ -44,6 +44,8 @@ Select a folder or files in Settings, or use Finder actions, to create an Immich
 
 Before creating or modifying remote content, the extension copies pending bytes into a per-account **Recovery** directory with a manifest. Failed preconditions, offline changes, and ambiguous network outcomes keep those copies. TUS session checkpoints allow interrupted transfers to resume at the server's accepted offset after restarting. Successful, committed operations clear their recovery entry. A recorded upload can resume a later failed rename without re-uploading. Expired sessions and lost upload-creation responses remain recoverable instead of being blindly replayed.
 
+Sync status and individual Recovery entries distinguish changes not sent, rejected requests, interrupted uploads, unavailable upload sessions, uncertain server results, and confirmed uploads with remaining changes pending. An uncertain result does not imply the previous server copy was preserved. Recovery-copy messages appear only when pending content is actually retained.
+
 Use **Open Recovery** in Settings. Copy a retained edit back into Finder with a new name to resolve a conflict. **Mark resolved; keep recovery files** clears a pending operation's deletion guard while retaining its files. Recovery is also accessible from the disconnected menu. Do not manually delete recovery content until you have recovered what you need.
 
 Disconnect uses preserve-downloaded-user-data mode. Recovery remains on disk. Revoke OpenCloud app tokens in the server's Settings.

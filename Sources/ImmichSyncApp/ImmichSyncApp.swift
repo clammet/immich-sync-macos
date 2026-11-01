@@ -171,20 +171,25 @@ struct ImmichSyncApp: App {
         }
         return "In System Settings → Privacy & Security → Extensions → File Providers, turn on OpenCloud Sync."
     }
+    var pendingIssue: MutationIssue? {
+        recoveryEntries.sorted { $0.createdAt > $1.createdAt }.compactMap(\.issue).first
+    }
+    var syncMessage: String? { status.message ?? pendingIssue?.message }
     var stateTitle: String {
         if account == nil { return "Not connected" }
         if providerState == .needsEnablement { return "Enable Finder integration" }
         if providerError != nil { return "Finder setup error" }
         if account?.paused == true { return "Sync paused" }
-        if status.message != nil { return "Sync error" }
+        if status.message != nil { return status.mutationOutcome?.title ?? "Sync error" }
         if error != nil { return "Action needs attention" }
+        if let issue = pendingIssue { return issue.outcome.title }
         if transferText != nil { return "Transferring files…" }
         if status.syncing { return "Checking for changes…" }
         return status.lastSync == nil ? "Connecting to OpenCloud…" : "Sync complete"
     }
     var stateSymbol: String {
         if account?.paused == true { return "pause.circle.fill" }
-        if error != nil || status.message != nil { return "exclamationmark.triangle.fill" }
+        if error != nil || syncMessage != nil { return "exclamationmark.triangle.fill" }
         return transferText != nil || status.syncing || status.lastSync == nil ? "arrow.triangle.2.circlepath" : "checkmark.circle.fill"
     }
     func readStatus() {
@@ -269,7 +274,15 @@ struct ImmichSyncApp: App {
         } catch { self.error = error.localizedDescription }
     }
     func markRecovered(_ id: String) {
-        do { try catalog().finishOperation(id); readStatus() }
+        do {
+            let catalog = try catalog(), issue = try catalog.operation(id)?.issue
+            try catalog.finishOperation(id)
+            if let issue, var status = try catalog.state("status",as: SyncStatus.self), status.message == issue.message {
+                status.message = nil; status.mutationOutcome = nil
+                try catalog.setState("status",value: status)
+            }
+            readStatus()
+        }
         catch { self.error = error.localizedDescription }
     }
     func copyResults() {
@@ -479,7 +492,7 @@ private struct MenuPanel: View {
                 Text("\(model.status.fileCount) files · \(model.status.folderCount) folders").font(.caption).foregroundStyle(.secondary)
                 if let date = model.status.lastSync { Text("Last checked \(date.formatted(.relative(presentation: .named)))").font(.caption) }
             }
-            if let error = model.error ?? model.status.message { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            if let error = model.error ?? model.syncMessage { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             if let transfer = model.transferText { ProgressView(value: model.transferFraction); Text(transfer).font(.caption) }
             if let result = model.actionResult {
                 Text(result.title).font(.caption)
@@ -639,10 +652,16 @@ private struct SettingsView: View {
                             Button("Open Recovery (\(model.recoveryCount) pending operations)",action: { model.openRecovery() })
                             Button("Open all retained Recovery folders") { model.openRecovery(allAccounts: true) }
                             ForEach(model.recoveryEntries,id: \.id) { entry in
-                                HStack {
-                                    Text(entry.filename).font(.caption)
-                                    Spacer()
-                                    Button("Mark resolved; keep recovery files") { model.markRecovered(entry.id) }
+                                VStack(alignment: .leading,spacing: 4) {
+                                    HStack {
+                                        Text(entry.filename).font(.caption)
+                                        Spacer()
+                                        Button("Mark resolved; keep recovery files") { model.markRecovered(entry.id) }
+                                    }
+                                    if let issue = entry.issue {
+                                        Text(issue.outcome.title).font(.caption).bold()
+                                        Text(issue.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                    }
                                 }
                             }
                         }.padding(8)

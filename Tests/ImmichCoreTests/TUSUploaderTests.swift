@@ -62,7 +62,10 @@ final class TUSUploaderTests: CatalogTestCase {
             }
         }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected response loss") }
-        catch is URLError { }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.interrupted)
+            guard MutationFailure.cause(of: error) is URLError else { throw error }
+        }
         let saved = try JSONDecoder().decode(TUSUploadCheckpoint.self,from: Data(contentsOf: checkpoint))
         XCTAssertNotNil(saved.location); XCTAssertFalse(saved.accepted)
         let mode = try FileManager.default.attributesOfItem(atPath: checkpoint.path)[.posixPermissions] as? NSNumber
@@ -76,13 +79,16 @@ final class TUSUploaderTests: CatalogTestCase {
         let source = try contents("data"), checkpoint = directory.appendingPathComponent("upload.json")
         StubProtocol.handler = { _ in throw URLError(.networkConnectionLost) }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected network failure") }
-        catch is URLError { }
+        catch { guard MutationFailure.cause(of: error) is URLError else { throw error } }
         StubProtocol.handler = { _ in XCTFail("Checkpoint mismatch must not send a request"); throw SyncError.invalidResponse }
         do { _ = try await api(username: "other").upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected account mismatch") }
-        catch SyncError.conflict { }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.notSent)
+            guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }
+        }
         try Data("edit".utf8).write(to: source)
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected source mismatch") }
-        catch SyncError.conflict { }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
     }
 
     func testLostCreationResponseIsNotReplayed() async throws {
@@ -90,9 +96,12 @@ final class TUSUploaderTests: CatalogTestCase {
         var posts = 0
         StubProtocol.handler = { r in posts += 1; XCTAssertEqual(r.httpMethod,"POST"); throw URLError(.networkConnectionLost) }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected lost response") }
-        catch is URLError { }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.uncertain)
+            guard MutationFailure.cause(of: error) is URLError else { throw error }
+        }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected ambiguous creation") }
-        catch SyncError.conflict { }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         XCTAssertEqual(posts,1)
     }
 
@@ -105,7 +114,10 @@ final class TUSUploaderTests: CatalogTestCase {
         }
         for _ in 0..<2 {
             do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected expired session") }
-            catch SyncError.conflict { }
+            catch {
+                XCTAssertEqual((error as? MutationFailure)?.outcome,.expired)
+                guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }
+            }
         }
         XCTAssertEqual(posts,1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.path))
@@ -118,7 +130,7 @@ final class TUSUploaderTests: CatalogTestCase {
             return (201,["Tus-Resumable":"1.0.0","Location":"https://other.example/data/token"],Data())
         }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: contents("data"),replacing: nil,progress: Progress()); XCTFail("Expected foreign Location rejection") }
-        catch SyncError.invalidServer { }
+        catch { guard case SyncError.invalidServer = MutationFailure.cause(of: error) else { throw error } }
         XCTAssertEqual(requests,1)
     }
 
@@ -132,7 +144,7 @@ final class TUSUploaderTests: CatalogTestCase {
                 return (200,headers,Data())
             }
             do { _ = try await api().upload(parent: parent,name: "data.bin",contents: contents("data"),replacing: nil,progress: Progress()); XCTFail("Expected invalid offset") }
-            catch SyncError.invalidResponse { }
+            catch { guard case SyncError.invalidResponse = MutationFailure.cause(of: error) else { throw error } }
             XCTAssertEqual(requests,2)
         }
         StubProtocol.handler = { r in
@@ -144,7 +156,7 @@ final class TUSUploaderTests: CatalogTestCase {
             }
         }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: contents("data"),replacing: nil,progress: Progress()); XCTFail("Expected offset conflict") }
-        catch SyncError.conflict { }
+        catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
     }
 
     func testPostUploadChecksumMismatchKeepsCheckpointAndNeverReportsSuccess() async throws {
@@ -158,7 +170,10 @@ final class TUSUploaderTests: CatalogTestCase {
             }
         }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: contents("data"),replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected checksum mismatch") }
-        catch SyncError.conflict { }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.uncertain)
+            guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error }
+        }
         XCTAssertTrue(FileManager.default.fileExists(atPath: checkpoint.path))
     }
 
@@ -180,7 +195,7 @@ final class TUSUploaderTests: CatalogTestCase {
             }
         }
         do { _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected metadata failure") }
-        catch is URLError { }
+        catch { guard MutationFailure.cause(of: error) is URLError else { throw error } }
         let saved = try JSONDecoder().decode(TUSUploadCheckpoint.self,from: Data(contentsOf: checkpoint))
         XCTAssertTrue(saved.accepted)
         _ = try await api().upload(parent: parent,name: "data.bin",contents: source,replacing: nil,progress: Progress(),checkpointURL: checkpoint)
@@ -205,5 +220,25 @@ final class TUSUploaderTests: CatalogTestCase {
         let file = try await api().upload(parent: parent,name: "data.bin",contents: contents(""),replacing: nil,progress: Progress())
         XCTAssertEqual(file.size,0)
         XCTAssertEqual(methods,["POST","PROPFIND"])
+    }
+
+    func testLostFinalPATCHReplyIsUncertainInsteadOfAnInterruptedPartialUpload() async throws {
+        let checkpoint = directory.appendingPathComponent("upload.json")
+        StubProtocol.handler = { r in
+            switch r.httpMethod {
+            case "POST": return (201,["Tus-Resumable":"1.0.0","Location":"/data/session"],Data())
+            case "HEAD": return (200,self.headers(offset: 2),Data())
+            case "PATCH": throw URLError(.networkConnectionLost)
+            default: throw SyncError.invalidResponse
+            }
+        }
+        do { _ = try await api().upload(parent: parent,name: "data.bin",contents: contents("data"),replacing: nil,progress: Progress(),checkpointURL: checkpoint); XCTFail("Expected lost final reply") }
+        catch {
+            XCTAssertEqual((error as? MutationFailure)?.outcome,.uncertain)
+            guard MutationFailure.cause(of: error) is URLError else { throw error }
+        }
+        let saved = try JSONDecoder().decode(TUSUploadCheckpoint.self,from: Data(contentsOf: checkpoint))
+        XCTAssertEqual(saved.completionAttempted,true)
+        XCTAssertFalse(saved.accepted)
     }
 }

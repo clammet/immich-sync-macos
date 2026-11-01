@@ -198,7 +198,7 @@ public final class Catalog: @unchecked Sendable {
                 var status = try stateUnlocked("status", as: SyncStatus.self) ?? SyncStatus()
                 status.fileCount = desired.filter { !$0.isFolder }.count
                 status.folderCount = desired.filter(\.isFolder).count
-                status.lastSync = Date(); status.message = nil; status.syncing = false
+                status.lastSync = Date(); status.message = nil; status.syncing = false; status.mutationOutcome = nil
                 try setStateUnlocked("status", value: status)
                 try execute("DELETE FROM snapshot")
                 try execute("DELETE FROM events WHERE seq < (SELECT MAX(seq)-50000 FROM events)")

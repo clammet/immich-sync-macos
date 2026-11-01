@@ -101,7 +101,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                 context.recordError(error)
                 // Restore rejected deletions in Finder. Excluded imports have no catalog row and are a no-op above.
                 let reject: Bool
-                switch error {
+                switch MutationFailure.cause(of: error) {
                 case SyncError.unsupported, SyncError.unsupportedLocation, SyncError.conflict: reject = true
                 default: reject = false
                 }

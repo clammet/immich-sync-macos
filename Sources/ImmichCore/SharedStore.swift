@@ -47,6 +47,7 @@ public struct SyncStatus: Codable, Sendable {
     public var folderCount: Int
     public var message: String?
     public var syncing: Bool
+    public var mutationOutcome: MutationOutcome?
     public init(lastSync: Date? = nil, fileCount: Int = 0, folderCount: Int = 0, message: String? = nil, syncing: Bool = false) {
         self.lastSync = lastSync; self.fileCount = fileCount; self.folderCount = folderCount; self.message = message; self.syncing = syncing
     }

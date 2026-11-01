@@ -36,9 +36,12 @@ final class SyncEngineTests: CatalogTestCase {
         let file = cloud("file",["document.txt"]), server = CloudServer([root,cloud("file",["document.txt"],etag: "other-client")])
         _ = try catalog.commit(root,parentID: ItemRecord.rootID); _ = try catalog.commit(file,parentID: root.id)
         let source = try contents("unsynced")
-        do { _ = try await engine(server).modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: source,progress: Progress()); XCTFail("Expected conflict") } catch SyncError.conflict {}
+        do { _ = try await engine(server).modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: source,progress: Progress()); XCTFail("Expected conflict") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         let reopened = try Catalog(url: directory.appendingPathComponent("catalog.sqlite"))
         let edit = try XCTUnwrap(reopened.recoveryOperations().first)
+        XCTAssertEqual(edit.issue?.outcome,.notSent)
+        XCTAssertEqual(edit.issue?.recoveryAvailable,true)
+        XCTAssertEqual(try catalog.state("status",as: SyncStatus.self)?.mutationOutcome,.notSent)
         let saved = reopened.localDirectory.appendingPathComponent(edit.id).appendingPathComponent("content/document.txt")
         XCTAssertEqual(try String(contentsOf: saved),"unsynced")
         let puts = await server.uploadCount; XCTAssertEqual(puts,0)
@@ -51,7 +54,7 @@ final class SyncEngineTests: CatalogTestCase {
         let source = try contents("ordinary file")
         let paused = try engine(server,check: { throw SyncError.paused })
         for _ in 0..<2 {
-            do { _ = try await paused.create(parentID: root.id,filename: "operation.json",directory: false,contents: source,progress: Progress()); XCTFail("Expected pause") } catch SyncError.paused {}
+            do { _ = try await paused.create(parentID: root.id,filename: "operation.json",directory: false,contents: source,progress: Progress()); XCTFail("Expected pause") } catch { guard case SyncError.paused = MutationFailure.cause(of: error) else { throw error } }
         }
         let edit = try XCTUnwrap(catalog.recoveryOperations().first)
         XCTAssertEqual(try catalog.recoveryOperations().count,1)
@@ -64,7 +67,7 @@ final class SyncEngineTests: CatalogTestCase {
     func testDestinationCollisionNeverOverwritesAndKeepsRecovery() async throws {
         let file = cloud("existing",["report.txt"]), server = CloudServer([root,file]); let engine = try engine(server)
         try await engine.synchronize()
-        do { _ = try await engine.create(parentID: root.id,filename: "report.txt",directory: false,contents: contents(),progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
+        do { _ = try await engine.create(parentID: root.id,filename: "report.txt",directory: false,contents: contents(),progress: Progress()); XCTFail("Expected collision") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         XCTAssertEqual(try catalog.item(file.id).remote?.etag,file.etag)
         XCTAssertEqual(try catalog.recoveryOperations().count,1); let puts = await server.uploadCount; XCTAssertEqual(puts,0)
     }
@@ -74,10 +77,12 @@ final class SyncEngineTests: CatalogTestCase {
         let source = try contents(); await server.rejectMove(true)
         do { _ = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: "after.txt",parentID: nil,contents: source,progress: Progress()); XCTFail("Expected offline move") } catch {}
         XCTAssertNotNil(try catalog.recoveryOperations().first?.uploaded)
+        XCTAssertEqual(try catalog.recoveryOperations().first?.issue?.outcome,.uploaded)
         await server.rejectMove(false)
         let moved = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: "after.txt",parentID: nil,contents: source,progress: Progress())
         XCTAssertEqual(moved.id,file.id); XCTAssertEqual(moved.filename,"after.txt")
         let puts = await server.uploadCount; XCTAssertEqual(puts,1); XCTAssertTrue(try catalog.recoveryOperations().isEmpty)
+        XCTAssertNil(try catalog.state("status",as: SyncStatus.self)?.mutationOutcome)
     }
     func testDirectoryRenameUpdatesDescendantRemotePathsAndPinInheritance() async throws {
         let dir = cloud("dir",["before"],directory: true), file = cloud("file",["before","a.txt"])
@@ -93,13 +98,14 @@ final class SyncEngineTests: CatalogTestCase {
         let dir = cloud("dir",["dir"],directory: true), file = cloud("file",["dir","a.txt"])
         let server = CloudServer([root,dir,file]); let engine = try engine(server); try await engine.synchronize()
         let paused = try self.engine(server,check: { throw SyncError.paused })
-        do { _ = try await paused.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: contents(),progress: Progress()); XCTFail("Expected pause") } catch SyncError.paused {}
-        do { try await engine.delete(id: dir.id,baseContentVersion: Data(dir.etag.utf8),recursive: true); XCTFail("Expected pending edit guard") } catch SyncError.conflict {}
+        do { _ = try await paused.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: contents(),progress: Progress()); XCTFail("Expected pause") } catch { guard case SyncError.paused = MutationFailure.cause(of: error) else { throw error } }
+        do { try await engine.delete(id: dir.id,baseContentVersion: Data(dir.etag.utf8),recursive: true); XCTFail("Expected pending edit guard") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         let deletions = await server.deleteCount; XCTAssertEqual(deletions,0)
         for pending in try catalog.recoveryOperations() { try catalog.finishOperation(pending.id) }
         await server.setFiles([root,cloud("dir",["dir"],directory: true,etag: "changed"),file])
-        do { try await engine.delete(id: dir.id,baseContentVersion: Data(dir.etag.utf8),recursive: true); XCTFail("Expected conflict") } catch SyncError.conflict {}
+        do { try await engine.delete(id: dir.id,baseContentVersion: Data(dir.etag.utf8),recursive: true); XCTFail("Expected conflict") } catch { guard case SyncError.conflict = MutationFailure.cause(of: error) else { throw error } }
         XCTAssertNotNil(try catalog.item(file.id))
+        XCTAssertEqual(try catalog.state("status",as: SyncStatus.self)?.mutationOutcome,.notSent)
     }
     func testCrossProcessLeasePreventsOverlappingScansAndMutations() throws {
         let other = try Catalog(url: directory.appendingPathComponent("catalog.sqlite"))
