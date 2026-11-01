@@ -58,7 +58,7 @@ def initialize(port=None):
 
 def compose(*args):
     initialize()
-    # Homebrew also ships the modern Compose plugin as a standalone executable.
+    # Homebrew also ships Compose as a standalone executable.
     plugin = subprocess.run(["docker", "compose", "version"], capture_output=True).returncode == 0
     cli = ["docker", "compose"] if plugin else ["docker-compose"]
     env = os.environ.copy()
@@ -211,7 +211,7 @@ def smoke(team):
     # All ordinary checks stay unsigned. This is the single necessary signed build.
     subprocess.run(["xcodebuild", "-project", "ImmichSync.xcodeproj", "-scheme", "ImmichSync", "-configuration", "Debug",
         "-destination", "generic/platform=macOS", "-derivedDataPath", "build/IntegrationSigned",
-        "DEVELOPMENT_TEAM=" + team, "IMMICH_BUNDLE_PREFIX=app.immich.sync.integration",
+        "ARCHS=arm64", "DEVELOPMENT_TEAM=" + team, "IMMICH_BUNDLE_PREFIX=app.immich.sync.integration",
         "IMMICH_APP_GROUP=" + team + ".app.immich.sync.integration", "build"], cwd=ROOT, check=True)
     built = ROOT / "build/IntegrationSigned/Build/Products/Debug/Immich Sync.app"
     subprocess.run(["python3", "scripts/verify-signing.py", str(built)], cwd=ROOT, check=True)

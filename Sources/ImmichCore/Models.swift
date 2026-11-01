@@ -29,12 +29,12 @@ public enum SyncError: Error, LocalizedError {
         case .conflict: return "This item changed on Immich. Your local edit has been preserved; resolve the conflict before retrying."
         case .missingItem: return "This item no longer exists on Immich."
         case .database(let message): return "The local sync database could not be accessed: \(message)"
-        case .credentialStorage: return "The saved sign-in credentials could not be accessed safely. Sign in again in Settings."
+        case .credentialStorage: return "The saved sign-in credentials could not be accessed. Sign in again in Settings."
         case .incompatibleServer: return "This build requires Immich \(SyncContract.serverVersion)."
         case .trashDisabled: return "Enable Immich trash with a retention period before syncing edits or deletions. The original has been kept."
         case .invalidSyncStream: return "Immich returned an incomplete or unsupported sync stream. Saved changes will resume at the last committed checkpoint."
         case .syncReset: return "Immich requested a new initial synchronization."
-        case .invalidOAuthCallback: return "The browser sign-in response could not be verified. Please start sign-in again."
+        case .invalidOAuthCallback: return "The browser sign-in response could not be verified. Start sign-in again."
         case .passwordChangeRequired: return "Change your password in Immich on the web, then sign in again."
         }
     }

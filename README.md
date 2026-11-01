@@ -1,10 +1,10 @@
 # Immich Sync for macOS
 
-A native menu bar client that connects Immich to Finder using Apple's File Provider framework. Browse your library, open media on demand, upload files, and keep selected items available offline.
+A menu bar app that displays Immich photos, videos, and albums in Finder using Apple's File Provider framework.
 
 ## Requirements
 
-- macOS 14 or later.
+- Apple Silicon Mac running macOS 14 or later.
 - Immich **3.3.5**.
 - Xcode with macOS support for building.
 - FileVault enabled.
@@ -19,9 +19,9 @@ For browser sign-in, add this redirect URI to the identity provider's Immich OAu
 immich-sync://oauth
 ```
 
-Each connection uses a dedicated Immich session. Its token is stored in a protected file shared by the app and extension. Passwords are never saved.
+Each connection uses a dedicated Immich session. Its token is stored in an App Group file with owner-only permissions, shared by the app and extension. Passwords are not saved.
 
-## Implemented
+## Supported operations
 
 | Feature | Behavior |
 | --- | --- |
@@ -36,7 +36,7 @@ Each connection uses a dedicated Immich session. Its token is stored in a protec
 | Unsupported files | Keep ordinary files and custom folders locally with a grey ignored badge |
 | Sync controls | Sync now, pause/resume, and launch at login |
 
-The extension exchanges changes with Immich over its native sync stream and REST API. It maintains a local SQLite catalog for Finder. The menu bar app requests updates every minute while running; Finder activity can also trigger updates.
+The extension exchanges changes with Immich over its sync stream and REST API. It maintains a local SQLite catalog for Finder. The menu bar app requests updates every minute while running; Finder activity can also trigger updates.
 
 Folder View follows Immich's current paths and storage template. External libraries are read-only. Unsupported items remain on this Mac and are not backed up to Immich. Packages and symlinks are excluded.
 
@@ -50,14 +50,22 @@ Disconnecting preserves downloaded and unsynced files, removes the local credent
 - Media edits and library deletions require Immich trash with a positive retention period. Permanent deletion is not implemented.
 - Finder tags, resource forks, new Live Photo pairing, and rendered non-destructive Immich edits are not synchronized.
 - Faces, share links, and stacks are not transferred to edited replacements.
-- A disposable Immich 3.3.5 integration suite covers production sync and mutations. A signed main-app/provider smoke test verifies sign-in, enumeration, original retrieval, and disconnect. Visual Finder workflows and OAuth integration testing remain pending; see the integration guide.
+- The integration suite tests sync and mutations against a disposable Immich 3.3.5 server. A signed app/provider smoke test checks sign-in, enumeration, original downloads, and disconnect. Visual Finder workflows and OAuth integration testing remain pending; see [integration testing](docs/integration-testing.md).
 
 ## Build and run
 
 1. Install full Xcode and select it as the active developer toolchain.
 2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. Set your development team and a unique bundle identifier.
 3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`. Both targets use manual Apple Development signing, no provisioning profile, and the same Team-ID-prefixed App Group.
-4. Install the app in Applications, launch it, enable the extension if prompted, and connect through the menu bar item.
+4. Install the app in Applications and launch it. Use the setup window to sign in, then enable the File Provider in System Settings when prompted.
+
+Build an Apple Development-signed DMG for this Mac with:
+
+```sh
+python3 scripts/build-dmg.py --team YOUR_TEAM_ID
+```
+
+See [developer DMGs](docs/distribution.md) for signing requirements and installation checks. 
 
 Run local build, test, and project checks with:
 

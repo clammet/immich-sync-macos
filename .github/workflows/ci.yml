@@ -10,7 +10,7 @@ jobs:
           swift build
           swift test
       - name: Validate bundled application and extension
-        run: xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync -configuration Debug -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
       - name: Check generated project is current
         run: |
           python3 scripts/generate-project.py

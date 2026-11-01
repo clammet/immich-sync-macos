@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-// Native vector drawing keeps the badge crisp at Finder's icon sizes.
+// Draw the badge at each Finder icon size.
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let folder = root.appendingPathComponent("build/IgnoredBadge.iconset")
 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

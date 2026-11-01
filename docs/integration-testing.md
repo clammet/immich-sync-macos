@@ -1,20 +1,12 @@
 # Integration testing
 
-Use macOS 14 or later, Xcode, Python 3, Docker Engine, and modern Docker Compose (2.24.4 or later, for `!override`). The signed smoke test additionally needs an Apple Development identity and matching Team-ID-prefixed App Groups. Use FileVault for stored credentials and media.
+Use macOS 14 or later, Xcode, Python 3, Docker Engine, and Docker Compose 2.24.4 or later (for `!override`). The signed smoke test additionally needs an Apple Development identity and matching Team-ID-prefixed App Groups. Use FileVault for stored credentials and media.
 
 ## Disposable local server
 
 The harness uses the [official v3.3.5 release Compose file](https://github.com/immich-app/immich/releases/download/v3.3.5/docker-compose.yml), vendored unchanged with a SHA-256 check. It runs the version-matched server and machine-learning images, official pinned VectorChord/pgvectors Postgres image, and pinned Valkey image. The override adds dependency health checks, isolated names/volumes, and localhost-only port publication. Machine-learning inference is disabled during seeding; that service still runs and must become healthy.
 
-If Docker is unavailable locally, install/start Colima and Compose:
-
-```sh
-brew install colima docker docker-compose
-colima start --cpu 4 --memory 6
-docker context use colima
-```
-
-The harness supports the Compose plugin or Homebrew's modern `docker-compose` executable. It uses the active Docker context. No global pruning or unrelated container changes are performed.
+The harness supports the Compose plugin or Homebrew's `docker-compose` executable. It uses the active Docker context and limits container and volume changes to its Compose project.
 
 ```sh
 python3 scripts/integration.py up      # start all services and wait for health/version
@@ -36,16 +28,16 @@ All generated files are under ignored `build/integration` (mode `0700`), includi
 
 ## Automated live coverage
 
-The opt-in XCTest calls production `ImmichAPI`, `SyncEngine`, `Catalog`, and `FileCredentialStore`. Assertions inspect both local state and real server responses; a separate login/catalog checks that client writes reached Immich. Fault wrappers drop responses or interrupt real stream delivery without faking server state.
+The opt-in XCTest calls `ImmichAPI`, `SyncEngine`, `Catalog`, and `FileCredentialStore`. Assertions inspect local state and server responses; a separate login/catalog checks that client writes reached Immich. Fault wrappers drop responses or interrupt stream delivery without faking server state.
 
 | Area | Assertions |
 | --- | --- |
 | Authentication/storage | Accepted/rejected passwords, dedicated session identity, logout/revocation; credential round-trip, owner/mode/backup exclusion, deletion, catalog secret exclusion |
 | Bootstrap/incremental | Originals, owned albums/memberships, external folder projection, foreign/locked filtering, server-side additions and album rename, idle sync without path searches |
 | Media | Byte-exact originals, SHA-1 verification, rejection of incorrect checksum without delivering a file, decodable thumbnail |
-| Uploads/albums | Production uploads and deduplication; creation, rename, membership move/removal, album deletion retaining originals |
+| Uploads/albums | Uploads and deduplication; creation, rename, membership move/removal, album deletion retaining originals |
 | Edits/deletion | Replacement content, copied favorite/album associations, pin retention; lost copy response and restart without reupload; trash/restore and permanent server deletion |
-| Recovery | Lost acknowledgement response/replay, interrupted stream completion, deleted server checkpoints, explicit reset, new catalog rebuild, stable appearances/local-only content retention, actual container stop/restart |
+| Recovery | Lost acknowledgement response/replay, interrupted stream completion, deleted server checkpoints, explicit reset, new catalog rebuild, stable appearances/local-only content retention, container stop/restart |
 
 The stream interruption is at a decoded batch boundary; the copy/ack faults occur after the server succeeds. These do not test a truncated TCP byte stream or a process killed mid-upload. The dataset is small and synthetic, not a performance benchmark.
 
@@ -55,13 +47,13 @@ The stream interruption is at a decoded batch boundary; the copy/ack faults occu
 sh scripts/check.sh
 ```
 
-Unsigned app and extension build for Apple Silicon and Intel:
+Unsigned app and extension build for Apple Silicon:
 
 ```sh
 xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
   -configuration Debug -destination 'generic/platform=macOS' \
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO \
-  ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' build
+  ONLY_ACTIVE_ARCH=NO ARCHS=arm64 build
 ```
 
 ## Signed main-app/provider smoke
@@ -74,16 +66,16 @@ IMMICH_SIGNING_TEAM=YOUR_TEAM_ID python3 scripts/integration.py smoke
 
 This performs one signed Debug build, verifies signatures, installs `~/Applications/Immich Sync Integration.app`, and registers its extension. It uses the isolated `app.immich.sync.integration` bundle prefix and App Group. On first use, enable **Immich Sync Integration** in System Settings → General → Login Items & Extensions → File Providers. The run times out after four minutes if macOS permission/enablement is still pending; enable it and rerun.
 
-The Debug-only `--integration-smoke` entry point is restricted to the integration bundle and loopback HTTP. It invokes the main app's production password sign-in and disconnect, checks App Group credentials and session identity, accesses the actual File Provider root, waits for embedded-provider indexing, and coordinates a read of a materialized original with a known checksum. Disconnect must remove credentials and revoke the server session. No smoke hook is compiled into Release builds.
+The Debug-only `--integration-smoke` entry point is restricted to the integration bundle and loopback HTTP. It invokes the main app's password sign-in and disconnect, checks App Group credentials and session identity, accesses the File Provider root, waits for embedded-provider indexing, and reads a downloaded original with a known checksum. Disconnect must remove credentials and revoke the server session. No smoke hook is compiled into Release builds.
 
-The app remains installed for manual checks. Production disconnect deliberately preserves downloaded content; remove the synthetic retained copy in Finder after inspection, and remove the integration app when finished. `clean` removes Docker data and unsigned test catalogs, not the installed app, its macOS container, or preserved downloads.
+The app remains installed for manual checks. Disconnect keeps downloaded content; remove the synthetic retained copy in Finder after inspection, and remove the integration app when finished. `clean` removes Docker data and unsigned test catalogs, not the installed app, its macOS container, or preserved downloads.
 
 For an ordinary signed build, set `Config/Local.xcconfig` as described in the README:
 
 ```sh
 xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
   -configuration Debug -destination 'generic/platform=macOS' \
-  -derivedDataPath build/DerivedData build
+  -derivedDataPath build/DerivedData ARCHS=arm64 build
 python3 scripts/verify-signing.py 'build/DerivedData/Build/Products/Debug/Immich Sync.app'
 ```
 
