@@ -107,24 +107,28 @@ final class APITests: XCTestCase {
         do { _ = try await api.makeDirectory(parent: parent,name: "exists"); XCTFail("Expected collision") } catch SyncError.conflict {}
         XCTAssertEqual(methods,["MOVE","PROPFIND","DELETE","MKCOL"])
     }
-    func testPutCreatesConditionallyAndNeverReplaysRejectedMutations() async throws {
+    func testTUSCreatesConditionallyAndNeverReplaysRejectedMutations() async throws {
         let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("data".utf8).write(to: url); defer { try? FileManager.default.removeItem(at: url) }
         var requests = 0
         StubProtocol.handler = { r in
-            requests += 1; XCTAssertEqual(r.httpMethod,"PUT")
+            requests += 1; XCTAssertEqual(r.httpMethod,"POST")
+            XCTAssertEqual(r.url,testSpace.davURL)
+            XCTAssertEqual(r.value(forHTTPHeaderField: "Tus-Resumable"),"1.0.0")
+            XCTAssertEqual(r.value(forHTTPHeaderField: "Upload-Length"),"4")
             XCTAssertEqual(r.value(forHTTPHeaderField: "If-None-Match"),"*")
-            XCTAssertEqual(r.value(forHTTPHeaderField: "OC-Checksum"),"SHA1:a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd")
+            XCTAssertEqual(r.value(forHTTPHeaderField: "Upload-Metadata"),
+                           "filename " + Data("data.bin".utf8).base64EncodedString() + ",checksum " + Data("SHA1 a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd".utf8).base64EncodedString())
             return (412,[:],Data())
         }
-        do { _ = try await api.put(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: nil,progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
+        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: nil,progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
         XCTAssertEqual(requests,1)
         StubProtocol.handler = { r in
             XCTAssertEqual(r.value(forHTTPHeaderField: "If-Match"),"\"v1\""); XCTAssertNil(r.value(forHTTPHeaderField: "If-None-Match"))
             return (412,[:],Data())
         }
-        do { _ = try await api.put(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: cloud("file",["data.bin"]),progress: Progress()); XCTFail("Expected stale update") } catch SyncError.conflict {}
+        do { _ = try await api.upload(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: cloud("file",["data.bin"]),progress: Progress()); XCTFail("Expected stale update") } catch SyncError.conflict {}
     }
     func testCreateSharingLinksForFilesAndSpaceRootsUsesLibreGraph() async throws {
         let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())

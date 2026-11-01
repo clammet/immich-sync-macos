@@ -6,7 +6,7 @@ OpenCloud is authoritative for file identities, directory structure, bytes, revi
 | --- | --- |
 | Menu bar app | OpenCloud app-token setup, optional Immich setup/mappings, sharing/media actions, recovery, sync controls |
 | File Provider extension | Cached enumeration, conditional downloads/mutations, native availability policies, Finder actions |
-| ImmichCore | OpenCloud WebDAV/Libre Graph, SQLite catalog, recovery journal, separate Immich media-action client |
+| ImmichCore | OpenCloud WebDAV/TUS/Libre Graph, SQLite catalog, recovery journal, separate Immich media-action client |
 
 ## Authentication and separation
 
@@ -22,14 +22,14 @@ Production URL sessions have no cookie, credential, or response caches and refus
 | Space root's `webDavUrl` | Exact server-provided DAV endpoint |
 | DAV `PROPFIND`, Depth 0/1 | Stable `oc:fileid`, ETags, names, directory structure, sizes, permissions and SHA-1 where supplied |
 | DAV `GET` | Stream content to disk with `If-Match`, length/checksum verification |
-| DAV `PUT` | Disk-backed upload, `OC-Checksum`, `If-None-Match: *` for creates, `If-Match` for edits |
+| TUS `POST`/`HEAD`/`PATCH` | Exact filename and SHA-1 upload metadata, bounded chunks and durable session resumption; requests `If-None-Match: *` for creates and `If-Match` for edits |
 | DAV `MKCOL` | Real server directories, without replacing an existing collection |
 | DAV `MOVE` | Within-space rename/reparent with `If-Match`, `Overwrite: F` |
 | DAV `DELETE` | Conditional deletion; server retention and trash policy apply |
 | Libre Graph `v1beta1/drives/.../createLink` | Read-only public link for a file/folder or space root |
 | Libre Graph item's `webUrl` | Server UI for sharing management |
 
-In-place uploads preserve server identities and let OpenCloud maintain revisions. Cross-space moves, partial uploads and revision restore/browsing are currently outside the client contract.
+In-place uploads preserve server identities and let OpenCloud maintain revisions. Uploads use TUS exclusively, including empty files; there is no WebDAV PUT fallback. WebDAV remains responsible for metadata, downloads, directories, moves and deletion. Cross-space moves and revision restore/browsing are currently outside the client contract.
 
 ## Metadata and Finder
 
@@ -43,7 +43,11 @@ SQLite uses WAL, full synchronization and a busy timeout. A cancellable operatio
 
 Every create/modify stages content and a recovery manifest before connectivity or revision checks. Manifest paths within the local recovery store are relative to an operation directory; a file named `operation.json` cannot overwrite its manifest because content has a separate subdirectory. Pending operations are keyed by source/destination/base version/content hash, making repeated retries reuse their recovery entry.
 
-The server checks ETag preconditions atomically. A mismatch or destination collision returns a conflict and leaves both server content and local recovery intact. When a successful upload is durably recorded but a following move fails, a retry validates that result before resuming. An ambiguous successful mutation without a recorded result stays recoverable and may require manual resolution. A failed scan cannot remove recovery. Directory deletion is rejected while staged descendant edits exist. Marking an operation resolved removes its guard while keeping its recovery files.
+The client requests ETag preconditions and handles server rejection as a conflict. OpenCloud 9.0.0 does not enforce all requested conditions atomically; see the [TUS test report](tus-testing.md). Client metadata checks and post-upload checksum/identity verification cannot close all server-side races.
+
+Each TUS operation saves `upload.json` in its private Recovery directory, bound to the server, username, destination, base revision and source digest. It records the returned upload URL before sending chunks. Retries ask the server for its accepted offset, so a lost PATCH response does not cause accepted bytes to be sent twice. Checkpoint files have owner-only permissions because upload URLs can contain transfer tokens. The app token is never saved there. A completed transfer is recorded before its final metadata/content verification; a later retry can verify it without another upload. Expired sessions and ambiguous POST outcomes require recovery instead of automatically creating a new session.
+
+When a successful upload is durably recorded but a following move fails, a retry validates that result before resuming. An ambiguous successful mutation without a recorded result stays recoverable and may require manual resolution. A failed scan cannot remove recovery. Directory deletion is rejected while staged descendant edits exist. Marking an operation resolved removes its guard while keeping its recovery files.
 
 Disconnect uses macOS's preserve-downloaded-user-data mode. Account catalogs and recovery remain on disk.
 
@@ -53,13 +57,14 @@ The optional Immich client exposes discovery/search, authentication, album creat
 
 Discovery queries `libraries` and `search/metadata`. A library-permission denial allows sample-path discovery to continue. Import roots, exclusion patterns and original paths are evidence about the Immich server/container, not an OpenCloud space identity. The APIs provide no authoritative cross-service mount correlation, so the app asks the user to confirm the corresponding OpenCloud media root and exact Immich path. It never guesses a space from a suffix.
 
-Mappings are scoped to the Immich server/user, support multiple roots/libraries, match complete path components and prefer the most specific confirmed root. Media selection searches exact `originalPath` and optional `libraryId`, validates exact results, rejects ambiguous/trashed/locked assets, and compares checksums when OpenCloud provides SHA-1. It sends deduplicated existing asset IDs to album/link creation. Folder actions report skipped unindexed/unmapped descendants; explicitly selected unresolved files fail before creation. Immich failures do not enter the OpenCloud sync engine.
+Mappings are scoped to the Immich server/user, support multiple roots/libraries, match complete path components and prefer the most specific confirmed root. Media selection searches exact `originalPath` and optional `libraryId`, validates exact results, rejects ambiguous/trashed/locked assets, and compares native-asset content checksums when OpenCloud provides SHA-1. External-library assets use path hashes and cannot be checked that way. It sends deduplicated existing asset IDs to album/link creation. Folder actions report skipped unindexed/unmapped descendants; explicitly selected unresolved files fail before creation. Immich failures do not enter the OpenCloud sync engine.
 
 Finder custom actions save their results in the catalog. The app observes and displays them for copying/opening without attempting forbidden UI launches from a non-UI extension.
 
 ## Contracts consulted
 
 - [OpenCloud WebDAV API](https://docs.opencloud.eu/docs/dev/server/apis/http/webdav/)
+- [OpenCloud TUS upload API](https://docs.opencloud.eu/docs/dev/server/apis/http/tus_upload/)
 - [OpenCloud app tokens](https://docs.opencloud.eu/docs/user/admin/app-tokens/)
 - [OpenCloud Libre Graph contract](https://github.com/opencloud-eu/libre-graph-api/blob/main/api/openapi-spec/v1.0.yaml)
 - [Immich 3.3.5 contract for optional media actions](https://github.com/immich-app/immich/blob/v3.3.5/open-api/immich-openapi-specs.json)

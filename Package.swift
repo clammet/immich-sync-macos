@@ -15,6 +15,6 @@ let package = Package(
         .target(name: "ImmichFileProvider", dependencies: ["ImmichCore"]),
         .executableTarget(name: "ImmichSyncApp", dependencies: ["ImmichCore"]),
         .testTarget(name: "ImmichCoreTests", dependencies: ["ImmichCore", "ImmichFileProvider"]),
-        .testTarget(name: "LiveIntegrationTests", dependencies: ["ImmichCore"])
+        .testTarget(name: "LiveIntegrationTests", dependencies: ["ImmichCore"], resources: [.copy("Fixtures")])
     ]
 )

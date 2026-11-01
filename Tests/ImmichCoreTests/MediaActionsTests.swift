@@ -6,8 +6,8 @@ actor MediaServer: ImmichMediaRemote {
     var assets: [String:[IndexedAsset]] = [:]
     var requested: [(String,String?)] = []
     var albums: [[String]] = []
-    func add(_ path: String, ids: [String]) {
-        assets[path] = ids.map { IndexedAsset(id: $0,originalPath: path,libraryId: "library",checksum: "",type: "IMAGE",isTrashed: false,visibility: "timeline") }
+    func add(_ path: String, ids: [String], libraryID: String? = "library", checksum: String = "") {
+        assets[path] = ids.map { IndexedAsset(id: $0,originalPath: path,libraryId: libraryID,checksum: checksum,type: "IMAGE",isTrashed: false,visibility: "timeline") }
     }
     func discover() async throws -> ImmichDiscovery { ImmichDiscovery(libraries: [],samplePaths: Array(assets.keys),libraryAccessDenied: true) }
     func indexedAssets(path: String,libraryID: String?) async throws -> [IndexedAsset] { requested.append((path,libraryID)); return assets[path] ?? [] }
@@ -15,6 +15,29 @@ actor MediaServer: ImmichMediaRemote {
     func createSharingLink(assetIDs: [String]) async throws -> URL { URL(string: "https://photos.example/share/new")! }
 }
 final class MediaActionsTests: CatalogTestCase {
+    func testExternalLibraryPathChecksumIsNotComparedWithOpenCloudContentDigest() async throws {
+        var file = cloud("external", ["Photos", "a.jpg"])
+        file.checksum = String(repeating: "11", count: 20)
+        _ = try catalog.commit(file, parentID: "root")
+        let server = MediaServer()
+        await server.add("/media/a.jpg", ids: ["external"], checksum: Data("path hash".utf8).base64EncodedString())
+        let mapping = try MediaMapping(spaceID: testSpace.id, cloudRoot: ["Photos"], immichRoot: "/media", libraryID: "library")
+        let result = try await MediaActions(remote: server).resolve(itemIDs: [file.id], catalog: catalog, mappings: [mapping])
+        XCTAssertEqual(result.assetIDs, ["external"])
+    }
+    func testNativeAssetsStillRequireMatchingContentChecksums() async throws {
+        var file = cloud("native", ["Photos", "a.jpg"])
+        file.checksum = String(repeating: "11", count: 20)
+        _ = try catalog.commit(file, parentID: "root")
+        let server = MediaServer(), actions = MediaActions(remote: server)
+        let mapping = try MediaMapping(spaceID: testSpace.id, cloudRoot: ["Photos"], immichRoot: "/media")
+        await server.add("/media/a.jpg", ids: ["native"], libraryID: nil, checksum: Data(repeating: 0x22, count: 20).base64EncodedString())
+        do { _ = try await actions.resolve(itemIDs: [file.id], catalog: catalog, mappings: [mapping]); XCTFail("Expected content mismatch") }
+        catch SyncError.mediaNotIndexed { }
+        await server.add("/media/a.jpg", ids: ["native"], libraryID: nil, checksum: Data(repeating: 0x11, count: 20).base64EncodedString())
+        let result = try await actions.resolve(itemIDs: [file.id], catalog: catalog, mappings: [mapping])
+        XCTAssertEqual(result.assetIDs, ["native"])
+    }
     func testContainerPathsNeverGuessAnOpenCloudSpaceOrSuffixMapping() async throws {
         let file = cloud("file",["Photos","a.jpg"]), server = MediaServer()
         _ = try catalog.commit(file,parentID: "root")

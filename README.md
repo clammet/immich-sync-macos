@@ -4,7 +4,7 @@ A menu bar app and native macOS File Provider for OpenCloud files and spaces. Sw
 
 ## Connect
 
-Build with Xcode for macOS 14 or later. Install the app in Applications, enter the OpenCloud server's base URL, username (or identity-provider UUID), and a dedicated **app token**, then enable the File Provider in System Settings. HTTPS is the default; HTTP requires an explicit per-server opt-in.
+Build with Xcode for macOS 14 or later. Install the app in Applications, enter the OpenCloud server's base URL, username, and a dedicated **app token**, then enable the File Provider in System Settings. HTTPS is the default; HTTP requires an explicit per-server opt-in.
 
 OpenCloud is the sole synchronization backend. The client discovers your spaces through Libre Graph and accesses their server-provided WebDAV URLs. There is no Immich connection or media-type requirement for synchronization.
 
@@ -13,7 +13,7 @@ OpenCloud is the sole synchronization backend. The client discovers your spaces 
 | Browse | Spaces contain the actual server directory tree and ordinary files |
 | Open | macOS hydrates content on demand |
 | Offline | Finder's **Always keep available**, **Make available on demand**, and parent-policy actions |
-| Create/edit | Conditional WebDAV uploads; revisions remain under OpenCloud's control |
+| Create/edit | Chunked TUS uploads with revision conditions; revisions remain under OpenCloud's control |
 | Rename/move | Server-side moves within a space, retaining file IDs |
 | Delete | Conditional server deletion; OpenCloud controls its trash/retention policies |
 | Share | Create read-only OpenCloud links for files/folders; open the server page to manage sharing |
@@ -42,7 +42,7 @@ Select a folder or files in Settings, or use Finder actions, to create an Immich
 
 ## Recovery
 
-Before creating or modifying remote content, the extension copies pending bytes into a per-account **Recovery** directory with a manifest. Failed preconditions, offline changes, and ambiguous network outcomes keep those copies. Successful, committed operations clear their recovery entry. A recorded upload can resume a later failed rename without re-uploading.
+Before creating or modifying remote content, the extension copies pending bytes into a per-account **Recovery** directory with a manifest. Failed preconditions, offline changes, and ambiguous network outcomes keep those copies. TUS session checkpoints allow interrupted transfers to resume at the server's accepted offset after restarting. Successful, committed operations clear their recovery entry. A recorded upload can resume a later failed rename without re-uploading. Expired sessions and lost upload-creation responses remain recoverable instead of being blindly replayed.
 
 Use **Open Recovery** in Settings. Copy a retained edit back into Finder with a new name to resolve a conflict. **Mark resolved; keep recovery files** clears a pending operation's deletion guard while retaining its files. Recovery is also accessible from the disconnected menu. Do not manually delete recovery content until you have recovered what you need.
 
@@ -59,9 +59,10 @@ The package and build targets use the `ImmichSync`/`ImmichCore` names; the user-
 
 ```sh
 sh scripts/check.sh
+python3 scripts/container-e2e.py
 python3 scripts/build-dmg.py --team YOUR_TEAM_ID
 ```
 
 See [architecture](docs/architecture.md), [integration testing](docs/integration-testing.md), and [distribution](docs/distribution.md).
 
-Current limits: one OpenCloud account, all member spaces, full metadata polling every minute, within-space moves, regular files/directories. Symlinks and packages are excluded. Finder tags/resource forks and revision browsing/restoration are not implemented; use OpenCloud's web interface for history. No live OpenCloud/Immich server or signed Finder workflow has been verified by the local unit suite; the opt-in integration tests and manual checklist cover these separately.
+Current limits: one OpenCloud account, all member spaces, full metadata polling every minute, within-space moves, regular files/directories. Symlinks and packages are excluded. Finder tags/resource forks and revision browsing/restoration are not implemented; use OpenCloud's web interface for history. The disposable container suite covers OpenCloud/Immich without OS interactions; signed Finder workflows remain manual. OpenCloud 9.0.0 has conditional-request and concurrent TUS upload failures; the container runner deliberately exits unsuccessfully when its upstream contract probes reproduce them. See [integration testing](docs/integration-testing.md) for coverage and limitations, and the [TUS test report](docs/tus-testing.md) for observed results.

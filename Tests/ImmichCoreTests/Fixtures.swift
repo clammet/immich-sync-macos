@@ -14,7 +14,7 @@ actor CloudServer: OpenCloudRemote {
     var files: [String:CloudFile]
     var failListing: [String]?
     var failMove = false
-    var putCount = 0
+    var uploadCount = 0
     var deleteCount = 0
     var rootChange = false
     init(_ files: [CloudFile]) { self.files = Dictionary(uniqueKeysWithValues: files.map { ($0.fileID,$0) }) }
@@ -38,12 +38,12 @@ actor CloudServer: OpenCloudRemote {
         guard files[file.fileID]?.etag == file.etag else { throw SyncError.conflict }
         let url = directory.appendingPathComponent(UUID().uuidString); try Data("data".utf8).write(to: url); return url
     }
-    func put(parent: CloudFile,name: String,contents: URL,replacing: CloudFile?,progress: Progress) async throws -> CloudFile {
+    func upload(parent: CloudFile,name: String,contents: URL,replacing: CloudFile?,progress: Progress,checkpointURL: URL?) async throws -> CloudFile {
         let existing = files.values.first { $0.path == parent.path + [name] }
         if let replacing { guard existing?.fileID == replacing.fileID, existing?.etag == replacing.etag else { throw SyncError.conflict } }
         else { guard existing == nil else { throw SyncError.conflict } }
-        putCount += 1
-        let result = cloud(replacing?.fileID ?? UUID().uuidString,parent.path + [name],etag: "put-\(putCount)")
+        uploadCount += 1
+        let result = cloud(replacing?.fileID ?? UUID().uuidString,parent.path + [name],etag: "put-\(uploadCount)")
         files[result.fileID] = result; return result
     }
     func makeDirectory(parent: CloudFile,name: String) async throws -> CloudFile {

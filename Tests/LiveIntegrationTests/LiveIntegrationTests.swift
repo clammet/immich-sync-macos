@@ -21,11 +21,11 @@ final class LiveIntegrationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: work) }
         do {
             let content = work.appendingPathComponent("ordinary.txt"); try Data("first version".utf8).write(to: content)
-            let file = try await api.put(parent: folder,name: "ordinary.txt",contents: content,replacing: nil,progress: Progress())
+            let file = try await api.upload(parent: folder,name: "ordinary.txt",contents: content,replacing: nil,progress: Progress())
             let destination = try await api.download(file,into: work,progress: Progress())
             XCTAssertEqual(try Data(contentsOf: destination),Data("first version".utf8))
             try Data("second client".utf8).write(to: content)
-            let newer = try await second.put(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress())
+            let newer = try await second.upload(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress())
             let catalog = try Catalog(url: work.appendingPathComponent("catalog.sqlite"))
             _ = try catalog.commit(folder,parentID: ItemRecord.rootID); _ = try catalog.commit(file,parentID: folder.id)
             let account = Account(serverURL: address.apiURL,userID: user.id,displayName: username,email: username,sessionID: UUID().uuidString,allowHTTP: true)
@@ -33,7 +33,7 @@ final class LiveIntegrationTests: XCTestCase {
             try Data("offline edit".utf8).write(to: content)
             do { _ = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: nil,parentID: nil,contents: content,progress: Progress()); XCTFail("Expected server conflict") } catch SyncError.conflict {}
             XCTAssertEqual(try catalog.recoveryOperations().count,1)
-            do { _ = try await api.put(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress()); XCTFail("Expected conditional write rejection") } catch SyncError.conflict {}
+            do { _ = try await api.upload(parent: folder,name: "ordinary.txt",contents: content,replacing: file,progress: Progress()); XCTFail("Expected conditional write rejection") } catch SyncError.conflict {}
             do { try await api.delete(file); XCTFail("Expected conditional delete rejection") } catch SyncError.conflict {}
             let moved = try await api.move(newer,parent: folder,name: "renamed.txt")
             XCTAssertEqual(moved.fileID,file.fileID)

@@ -1,0 +1,75 @@
+# Disposable test services only. The runner supplies random credentials, ports and
+# a unique Compose project; all data lives in project-scoped named volumes.
+services:
+  opencloud:
+    image: opencloudeu/opencloud-rolling:9.0.0
+    entrypoint: /bin/sh
+    command: ["-ec", "opencloud init; exec opencloud server"]
+    environment:
+      OC_URL: http://127.0.0.1:${E2E_OPENCLOUD_PORT}
+      OC_INSECURE: "true"
+      # The embedded IDP requires an HTTPS issuer even though this test uses
+      # basic authentication over loopback HTTP rather than browser OIDC.
+      IDP_ISS: https://opencloud.invalid
+      PROXY_TLS: "false"
+      PROXY_HTTP_ADDR: 0.0.0.0:9200
+      PROXY_ENABLE_BASIC_AUTH: "true"
+      IDM_ADMIN_PASSWORD: ${E2E_PASSWORD}
+      IDM_CREATE_DEMO_USERS: "false"
+      OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: "false"
+      STORAGE_USERS_DRIVER: posix
+      STORAGE_USERS_ID_CACHE_STORE: nats-js-kv
+      OC_LOG_LEVEL: warn
+    ports:
+      - "127.0.0.1:${E2E_OPENCLOUD_PORT}:9200"
+    volumes:
+      - opencloud-config:/etc/opencloud
+      - opencloud-data:/var/lib/opencloud
+  immich:
+    image: ghcr.io/immich-app/immich-server:v3.3.5
+    environment:
+      DB_HOSTNAME: database
+      DB_USERNAME: postgres
+      DB_PASSWORD: ${E2E_PASSWORD}
+      DB_DATABASE_NAME: immich
+      REDIS_HOSTNAME: redis
+      IMMICH_CONFIG_FILE: /e2e-config.json
+    ports:
+      - "127.0.0.1:${E2E_IMMICH_PORT}:2283"
+    volumes:
+      - immich-data:/data
+      # The originals are the actual POSIX files written through OpenCloud DAV.
+      - opencloud-data:/opencloud:ro
+      - ./immich.json:/e2e-config.json:ro
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  redis:
+    image: valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  database:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${E2E_PASSWORD}
+      POSTGRES_DB: immich
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - database:/var/lib/postgresql/data
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d immich"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+volumes:
+  opencloud-config:
+  opencloud-data:
+  immich-data:
+  database:

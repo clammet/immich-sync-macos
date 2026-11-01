@@ -47,7 +47,9 @@ public final class MediaActions: Sendable {
                 if explicit.contains(record.id) { throw SyncError.mediaNotIndexed }
                 skipped += 1; continue
             }
-            if let checksum = file.checksum {
+            // Immich external libraries use SHA1("path:" + originalPath), not a
+            // content digest. Only native assets have a comparable checksum.
+            if asset.libraryId == nil, let checksum = file.checksum {
                 let expected = Data(base64Encoded: asset.checksum)?.map { String(format: "%02x",$0) }.joined()
                 guard expected?.lowercased() == checksum.lowercased() else { throw SyncError.mediaNotIndexed }
             }

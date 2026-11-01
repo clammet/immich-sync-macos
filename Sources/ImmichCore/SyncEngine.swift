@@ -113,6 +113,9 @@ public final class SyncEngine: @unchecked Sendable {
     private func contentURL(_ edit: PendingEdit) -> URL {
         catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true).appendingPathComponent("content",isDirectory: true).appendingPathComponent(ItemRecord.localName(edit.filename))
     }
+    private func uploadCheckpointURL(_ edit: PendingEdit) -> URL {
+        catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true).appendingPathComponent("upload.json")
+    }
     private func save(_ edit: PendingEdit) throws {
         try catalog.saveOperation(edit)
         let directory = catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true)
@@ -159,7 +162,7 @@ public final class SyncEngine: @unchecked Sendable {
             file = try await remote.properties(space: uploaded.space,path: uploaded.path)
             guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
         } else {
-            file = try await directory ? remote.makeDirectory(parent: parent,name: filename) : remote.put(parent: parent,name: filename,contents: contentURL(edit),replacing: nil,progress: progress)
+            file = try await directory ? remote.makeDirectory(parent: parent,name: filename) : remote.upload(parent: parent,name: filename,contents: contentURL(edit),replacing: nil,progress: progress,checkpointURL: uploadCheckpointURL(edit))
             edit.uploaded = file; try save(edit)
         }
         let record = try catalog.commit(file,parentID: parentID)
@@ -182,11 +185,19 @@ public final class SyncEngine: @unchecked Sendable {
             file = try await remote.properties(space: uploaded.space,path: uploaded.path)
             guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
         } else {
-            do { file = try await current(record,version: baseContentVersion) }
-            catch SyncError.missingItem { throw SyncError.conflict }
+            if contents != nil, FileManager.default.fileExists(atPath: uploadCheckpointURL(edit).path) {
+                // A TUS session may have changed the server's processing ETag.
+                // Resume only the checkpoint bound to this exact base and bytes.
+                file = known
+                guard let base = String(data: baseContentVersion,encoding: .utf8) else { throw SyncError.invalidResponse }
+                file.etag = try OpenCloudAPI.condition(base)
+            } else {
+                do { file = try await current(record,version: baseContentVersion) }
+                catch SyncError.missingItem { throw SyncError.conflict }
+            }
             if contents != nil {
                 let originalParent = try await current(catalog.item(record.parentID))
-                file = try await remote.put(parent: originalParent,name: known.name,contents: contentURL(edit),replacing: file,progress: progress)
+                file = try await remote.upload(parent: originalParent,name: known.name,contents: contentURL(edit),replacing: file,progress: progress,checkpointURL: uploadCheckpointURL(edit))
                 edit.uploaded = file; try save(edit)
             }
         }

@@ -5,7 +5,7 @@ public protocol OpenCloudRemote: Sendable {
     func properties(space: CloudSpace, path: [String]) async throws -> CloudFile
     func children(_ folder: CloudFile) async throws -> [CloudFile]
     func download(_ file: CloudFile, into directory: URL, progress: Progress) async throws -> URL
-    func put(parent: CloudFile, name: String, contents: URL, replacing: CloudFile?, progress: Progress) async throws -> CloudFile
+    func upload(parent: CloudFile, name: String, contents: URL, replacing: CloudFile?, progress: Progress, checkpointURL: URL?) async throws -> CloudFile
     func makeDirectory(parent: CloudFile, name: String) async throws -> CloudFile
     func move(_ file: CloudFile, parent: CloudFile, name: String) async throws -> CloudFile
     func delete(_ file: CloudFile) async throws
@@ -15,12 +15,17 @@ public protocol OpenCloudRemote: Sendable {
 
 final class HTTPDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate, @unchecked Sendable {
     let progress: Progress?
-    init(_ progress: Progress? = nil) { self.progress = progress }
+    private let uploadOffset: Int64
+    private let uploadLength: Int64?
+    init(_ progress: Progress? = nil, uploadOffset: Int64 = 0, uploadLength: Int64? = nil) {
+        self.progress = progress; self.uploadOffset = uploadOffset; self.uploadLength = uploadLength
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
                     totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        progress?.totalUnitCount = max(1,totalBytesExpectedToSend); progress?.completedUnitCount = totalBytesSent
+        progress?.totalUnitCount = max(1,uploadLength ?? totalBytesExpectedToSend)
+        progress?.completedUnitCount = uploadOffset + totalBytesSent
     }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -57,8 +62,11 @@ public final class OpenCloudAPI: OpenCloudRemote, @unchecked Sendable {
     private let username: String
     private let token: @Sendable () throws -> String
     private let session: URLSession
-    public init(serverURL: URL, username: String, token: @escaping @Sendable () throws -> String, session: URLSession? = nil) {
+    private let uploadChunkSize: Int
+    public init(serverURL: URL, username: String, token: @escaping @Sendable () throws -> String, session: URLSession? = nil,
+                uploadChunkSize: Int = 8 * 1024 * 1024) {
         self.serverURL = serverURL; self.username = username; self.token = token; self.session = session ?? HTTPClient.session()
+        self.uploadChunkSize = min(max(1,uploadChunkSize),8 * 1024 * 1024)
     }
     private func endpoint(_ parts: [String]) -> URL { parts.reduce(serverURL) { $0.appendingPathComponent($1) } }
     public func request(url: URL, method: String = "GET") throws -> URLRequest {
@@ -157,25 +165,14 @@ public final class OpenCloudAPI: OpenCloudRemote, @unchecked Sendable {
               etag.hasPrefix("\""), etag.hasSuffix("\""), !etag.dropFirst().dropLast().contains("\"") else { throw SyncError.invalidResponse }
         return etag
     }
-    public func put(parent: CloudFile, name: String, contents: URL, replacing: CloudFile?, progress: Progress) async throws -> CloudFile {
+    public func upload(parent: CloudFile, name: String, contents: URL, replacing: CloudFile?, progress: Progress,
+                       checkpointURL: URL? = nil) async throws -> CloudFile {
         try RemotePath.validate([name])
         guard parent.isDirectory, replacing?.isDirectory != true, replacing == nil || (replacing?.space.id == parent.space.id && replacing.map { RemotePath.equal($0.path,parent.path + [name]) } == true) else { throw SyncError.unsupportedLocation }
-        var r = try request(url: parent.url.appendingPathComponent(name), method: "PUT")
-        if let replacing { r.setValue(try Self.condition(replacing.etag), forHTTPHeaderField: "If-Match") }
-        else { r.setValue("*", forHTTPHeaderField: "If-None-Match") }
-        let digest = try FileDigest.sha1(contents).map { String(format: "%02x",$0) }.joined()
-        r.setValue("SHA1:" + digest, forHTTPHeaderField: "OC-Checksum")
-        r.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        let (_,response) = try await session.upload(for: r, fromFile: contents, delegate: HTTPDelegate(progress))
-        let http = try HTTPClient.validate(response)
-        guard [201,204].contains(http.statusCode) else { throw SyncError.invalidResponse }
-        let current = try await properties(space: parent.space,path: parent.path + [name])
-        guard http.value(forHTTPHeaderField: "ETag") != nil || current.checksum != nil else { throw SyncError.invalidResponse }
-        guard !current.isDirectory, replacing.map({ $0.fileID == current.fileID }) ?? true,
-              http.value(forHTTPHeaderField: "ETag").map({ $0 == current.etag }) ?? true,
-              current.checksum.map({ $0.lowercased() == digest }) ?? true else { throw SyncError.conflict }
-        progress.completedUnitCount = progress.totalUnitCount
-        return current
+        let binding = RemotePath.digest(serverURL.absoluteString + "\0" + username)
+        return try await TUSUploader(api: self, session: session, chunkSize: uploadChunkSize, binding: binding)
+            .upload(parent: parent, name: name, contents: contents, replacing: replacing,
+                    progress: progress, checkpointURL: checkpointURL)
     }
     public func makeDirectory(parent: CloudFile, name: String) async throws -> CloudFile {
         try RemotePath.validate([name])

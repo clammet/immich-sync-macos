@@ -1,0 +1,5 @@
+{
+  "machineLearning": { "enabled": false },
+  "reverseGeocoding": { "enabled": false },
+  "newVersionCheck": { "enabled": false }
+}

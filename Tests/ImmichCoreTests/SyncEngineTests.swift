@@ -41,7 +41,7 @@ final class SyncEngineTests: CatalogTestCase {
         let edit = try XCTUnwrap(reopened.recoveryOperations().first)
         let saved = reopened.localDirectory.appendingPathComponent(edit.id).appendingPathComponent("content/document.txt")
         XCTAssertEqual(try String(contentsOf: saved),"unsynced")
-        let puts = await server.putCount; XCTAssertEqual(puts,0)
+        let puts = await server.uploadCount; XCTAssertEqual(puts,0)
         await server.setFiles([root]); try await engine(server).synchronize(force: true)
         XCTAssertEqual(try reopened.recoveryOperations().count,1)
         XCTAssertEqual(try String(contentsOf: saved),"unsynced")
@@ -66,7 +66,7 @@ final class SyncEngineTests: CatalogTestCase {
         try await engine.synchronize()
         do { _ = try await engine.create(parentID: root.id,filename: "report.txt",directory: false,contents: contents(),progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
         XCTAssertEqual(try catalog.item(file.id).remote?.etag,file.etag)
-        XCTAssertEqual(try catalog.recoveryOperations().count,1); let puts = await server.putCount; XCTAssertEqual(puts,0)
+        XCTAssertEqual(try catalog.recoveryOperations().count,1); let puts = await server.uploadCount; XCTAssertEqual(puts,0)
     }
     func testInterruptedContentAndRenameResumesRecordedUploadWithoutUploadingTwice() async throws {
         let file = cloud("file",["before.txt"]), server = CloudServer([root,cloud("file",["before.txt"])])
@@ -77,7 +77,7 @@ final class SyncEngineTests: CatalogTestCase {
         await server.rejectMove(false)
         let moved = try await engine.modify(id: file.id,baseContentVersion: Data(file.etag.utf8),filename: "after.txt",parentID: nil,contents: source,progress: Progress())
         XCTAssertEqual(moved.id,file.id); XCTAssertEqual(moved.filename,"after.txt")
-        let puts = await server.putCount; XCTAssertEqual(puts,1); XCTAssertTrue(try catalog.recoveryOperations().isEmpty)
+        let puts = await server.uploadCount; XCTAssertEqual(puts,1); XCTAssertTrue(try catalog.recoveryOperations().isEmpty)
     }
     func testDirectoryRenameUpdatesDescendantRemotePathsAndPinInheritance() async throws {
         let dir = cloud("dir",["before"],directory: true), file = cloud("file",["before","a.txt"])
