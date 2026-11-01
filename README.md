@@ -1,78 +1,67 @@
-# Immich Sync for macOS
+# OpenCloud Sync for macOS
 
-A menu bar app that displays Immich photos, videos, and albums in Finder using Apple's File Provider framework.
-
-## Requirements
-
-- Apple Silicon Mac running macOS 14 or later.
-- Immich **3.3.5**.
-- Xcode with macOS support for building.
-- FileVault enabled.
+A menu bar app and native macOS File Provider for OpenCloud files and spaces. Swift, SQLite, and Apple's File Provider supply Finder placeholders, on-demand downloads, and offline availability. Immich is an optional media integration.
 
 ## Connect
 
-Enter your server URL and sign in with email/password or your server's OAuth provider. HTTPS is the default; HTTP can be enabled for a trusted local server.
+Build with Xcode for macOS 14 or later. Install the app in Applications, enter the OpenCloud server's base URL, username (or identity-provider UUID), and a dedicated **app token**, then enable the File Provider in System Settings. HTTPS is the default; HTTP requires an explicit per-server opt-in.
 
-For browser sign-in, add this redirect URI to the identity provider's Immich OAuth client:
+OpenCloud is the sole synchronization backend. The client discovers your spaces through Libre Graph and accesses their server-provided WebDAV URLs. There is no Immich connection or media-type requirement for synchronization.
 
-```text
-immich-sync://oauth
-```
-
-Each connection uses a dedicated Immich session. Its token is stored in an App Group file with owner-only permissions, shared by the app and extension. Passwords are not saved.
-
-## Supported operations
-
-| Feature | Behavior |
+| Operation | Behavior |
 | --- | --- |
-| Folder View | Browse media in its server-managed folder hierarchy |
-| Albums | Browse, create, rename, and delete albums |
-| On-demand access | Download originals when opened; fetch thumbnails separately |
-| Offline availability | Keep files or folders downloaded, or allow on-demand eviction |
-| Uploads | Add supported media through Folder View or an album |
-| Album membership | Add, move, or remove album appearances while keeping originals |
-| Media edits | Upload a replacement, copy supported associations, and trash the previous original |
-| Library deletion | Move media deleted from Folder View to Immich trash |
-| Unsupported files | Keep ordinary files and custom folders locally with a grey ignored badge |
-| Sync controls | Sync now, pause/resume, and launch at login |
+| Browse | Spaces contain the actual server directory tree and ordinary files |
+| Open | macOS hydrates content on demand |
+| Offline | Finder's **Always keep available**, **Make available on demand**, and parent-policy actions |
+| Create/edit | Conditional WebDAV uploads; revisions remain under OpenCloud's control |
+| Rename/move | Server-side moves within a space, retaining file IDs |
+| Delete | Conditional server deletion; OpenCloud controls its trash/retention policies |
+| Share | Create read-only OpenCloud links for files/folders; open the server page to manage sharing |
+| Conflict/failure | Retain pending Finder changes and durable recovery copies; never overwrite a changed revision |
 
-The extension exchanges changes with Immich over its sync stream and REST API. It maintains a local SQLite catalog for Finder. The menu bar app requests updates every minute while running; Finder activity can also trigger updates.
+Representable filenames are retained, including dotfiles, whitespace and Unicode. Suffixes are used only for actual case/Unicode collisions on the local filesystem or names exceeding its limit. Server paths remain exact even when Finder needs a different display name. Immich asset IDs are never appended to synchronized names.
 
-Folder View follows Immich's current paths and storage template. External libraries are read-only. Unsupported items remain on this Mac and are not backed up to Immich. Packages and symlinks are excluded.
+Sharing actions are available in Settings and Finder's File Provider context menu. Finder-created links and album URLs appear in the menu bar app with **Copy links** and **Open result**. The app must be running to display those results; the extension saves them if it is closed.
 
-Disconnecting preserves downloaded and unsynced files, removes the local credential, and attempts to revoke the session.
+## Optional Immich actions
 
-## Limits and validation
+Connect Immich separately in Settings using a session (password/browser sign-in) or an API key. For browser sign-in register `immich-sync://oauth` with the identity provider's Immich OAuth client.
 
-- One connected account and one Finder location on the Mac's home volume.
-- Only the connected user's eligible originals and owned albums are shown. Locked assets are excluded.
-- Server folders and original filenames cannot be renamed or reorganized in Finder. Albums cannot be nested.
-- Media edits and library deletions require Immich trash with a positive retention period. Permanent deletion is not implemented.
-- Finder tags, resource forks, new Live Photo pairing, and rendered non-destructive Immich edits are not synchronized.
-- Faces, share links, and stacks are not transferred to edited replacements.
-- The integration suite tests sync and mutations against a disposable Immich 3.3.5 server. A signed app/provider smoke test checks sign-in, enumeration, original downloads, and disconnect. Visual Finder workflows and OAuth integration testing remain pending; see [integration testing](docs/integration-testing.md).
+Use **Discover libraries and paths** to query library import roots, exclusions and sample indexed original paths. Library configuration can require administrator permissions; ordinary users can still inspect paths exposed by their accessible assets. These APIs do not establish which OpenCloud space backs an Immich container mount.
 
-## Build and run
+Configure each media mapping explicitly:
 
-1. Install full Xcode and select it as the active developer toolchain.
-2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. Set your development team and a unique bundle identifier.
-3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`. Both targets use manual Apple Development signing, no provisioning profile, and the same Team-ID-prefixed App Group.
-4. Install the app in Applications and launch it. Use the setup window to sign in, then enable the File Provider in System Settings when prompted.
+1. Select the corresponding folder or space **inside OpenCloud**.
+2. Enter the exact server/container directory that Immich sees for that folder.
+3. Optionally specify the Immich library ID, especially if multiple libraries index the same path.
+4. Add separate mappings for other spaces, subtrees or mounts.
 
-Build an Apple Development-signed DMG for this Mac with:
+No suffix-based path guessing is performed. Mappings are scoped to the connected Immich server/user and use case-sensitive component boundaries. The most specific confirmed mapping applies. Ambiguous mappings or assets fail safely.
 
-```sh
-python3 scripts/build-dmg.py --team YOUR_TEAM_ID
-```
+Select a folder or files in Settings, or use Finder actions, to create an Immich album or sharing link. These actions resolve exact indexed original paths and pass **existing asset IDs** to Immich. They never upload a duplicate native copy. Folder actions include indexed descendants and report skipped files; explicitly selected files must resolve. Newly added or edited media may need time for Immich's external-library scan. Files outside mapped/indexed media continue to support all OpenCloud operations.
 
-See [developer DMGs](docs/distribution.md) for signing requirements and installation checks. 
+## Recovery
 
-Run local build, test, and project checks with:
+Before creating or modifying remote content, the extension copies pending bytes into a per-account **Recovery** directory with a manifest. Failed preconditions, offline changes, and ambiguous network outcomes keep those copies. Successful, committed operations clear their recovery entry. A recorded upload can resume a later failed rename without re-uploading.
+
+Use **Open Recovery** in Settings. Copy a retained edit back into Finder with a new name to resolve a conflict. **Mark resolved; keep recovery files** clears a pending operation's deletion guard while retaining its files. Recovery is also accessible from the disconnected menu. Do not manually delete recovery content until you have recovered what you need.
+
+Disconnect uses preserve-downloaded-user-data mode. Recovery remains on disk. Revoke OpenCloud app tokens in the server's Settings.
+
+## Build and validation
+
+The package and build targets use the `ImmichSync`/`ImmichCore` names; the user-visible product is OpenCloud Sync.
+
+1. Select full Xcode as the active developer toolchain.
+2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and set your development team and unique bundle identifier.
+3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`.
+4. Install the resulting app in Applications.
 
 ```sh
 sh scripts/check.sh
+python3 scripts/build-dmg.py --team YOUR_TEAM_ID
 ```
 
-See [architecture](docs/architecture.md) for implementation details and [integration testing](docs/integration-testing.md) for signed bundle verification and the live test checklist.
+See [architecture](docs/architecture.md), [integration testing](docs/integration-testing.md), and [distribution](docs/distribution.md).
 
-This project is an independent Immich client.
+Current limits: one OpenCloud account, all member spaces, full metadata polling every minute, within-space moves, regular files/directories. Symlinks and packages are excluded. Finder tags/resource forks and revision browsing/restoration are not implemented; use OpenCloud's web interface for history. No live OpenCloud/Immich server or signed Finder workflow has been verified by the local unit suite; the opt-in integration tests and manual checklist cover these separately.

@@ -1,5 +1,7 @@
 import Foundation
 
+public enum SyncContract { public static let interval: TimeInterval = 60 }
+
 private actor OperationGate {
     private var busy = false
     private var waiters: [(UUID, CheckedContinuation<Void, Error>)] = []
@@ -24,357 +26,194 @@ private actor OperationGate {
     }
 }
 
-/// Serializes native sync and mutations across suspension points.
+/// The content file and this manifest are retained until the server result is committed locally.
+public struct PendingEdit: Codable, Sendable {
+    public let id: String
+    public let sourceID: String?
+    public let parentID: String
+    public let filename: String
+    public let hash: String?
+    public let baseVersion: Data?
+    public let createdAt: Date
+    public var uploaded: CloudFile?
+}
+
 public final class SyncEngine: @unchecked Sendable {
     public let catalog: Catalog
-    private let remote: any ImmichRemote
-    private let account: Account
-    private var completedStream = false
+    private let remote: any OpenCloudRemote
     private let gate = OperationGate()
     private let checkRunning: @Sendable () throws -> Void
-
-    public init(catalog: Catalog, remote: any ImmichRemote, account: Account,
+    public init(catalog: Catalog, remote: any OpenCloudRemote, account: Account,
                 checkRunning: @escaping @Sendable () throws -> Void = {}) throws {
-        self.catalog = catalog; self.remote = remote; self.account = account; self.checkRunning = checkRunning
-        try catalog.prepareSession(account.sessionID)
+        self.catalog = catalog; self.remote = remote; self.checkRunning = checkRunning
     }
+    private func check() throws { try checkRunning(); try Task.checkCancellation() }
 
     @discardableResult public func synchronize(force: Bool = false) async throws -> Bool {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        try checkRunning(); try Task.checkCancellation()
-        let before = try catalog.anchor()
+        try check()
+        let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
         var status = try catalog.state("status", as: SyncStatus.self) ?? SyncStatus()
-        let nativeDue = try force || catalog.isBootstrapping || !catalog.pendingAcknowledgements().isEmpty ||
-            status.lastSync.map { Date().timeIntervalSince($0) >= SyncContract.interval } ?? true
-        if !nativeDue, try catalog.pathWork(sessionID: account.sessionID, userID: account.userID).isEmpty { return false }
+        if !force, let last = status.lastSync, Date().timeIntervalSince(last) < SyncContract.interval { return false }
+        let before = try catalog.anchor()
         status.syncing = true; status.message = nil
-        try catalog.setState("status", value: status)
+        try catalog.setState("status",value: status)
         do {
-            if !nativeDue {
-                try await resolvePaths()
-                var finished = try catalog.state("status", as: SyncStatus.self) ?? status
-                finished.syncing = false; finished.message = nil
-                try catalog.setState("status", value: finished)
-                return try catalog.anchor() != before
+            let token = try catalog.beginSnapshot()
+            let spaces = try await remote.spaces()
+            var visited = Set<String>()
+            for space in spaces {
+                let root = try await remote.properties(space: space,path: [])
+                guard root.isDirectory else { throw SyncError.invalidResponse }
+                try catalog.stage([.record(root,parentID: ItemRecord.rootID)],token: token)
+                try await scan(root,token: token,visited: &visited)
             }
-            _ = try await supportedTypes()
-            // A lost ack response must be replayed before the server chooses the next change window.
-            try await flushAcknowledgements()
-            for attempt in 0..<2 {
-                let reset = try catalog.needsServerReset
-                completedStream = false
-                do {
-                    try await remote.synchronize(reset: reset, started: {
-                        try self.checkRunning()
-                        if reset { try self.catalog.acceptedReset(sessionID: self.account.sessionID) }
-                    }, receive: { events in
-                        try self.checkRunning(); try Task.checkCancellation()
-                        if try self.catalog.apply(events, userID: self.account.userID, sessionID: self.account.sessionID) {
-                            self.completedStream = true
-                        }
-                        try await self.flushAcknowledgements()
-                    })
-                    guard completedStream else { throw SyncError.invalidSyncStream }
-                    try await resolvePaths()
-                    return try catalog.anchor() != before
-                } catch SyncError.syncReset {
-                    try catalog.requestReset(sessionID: account.sessionID)
-                    if attempt == 1 { throw SyncError.invalidSyncStream }
-                }
-            }
-            throw SyncError.invalidSyncStream
+            try check()
+            // A concurrent change in membership must not publish a partial set of spaces.
+            guard try await remote.spaces().sorted(by: { $0.id < $1.id }) == spaces.sorted(by: { $0.id < $1.id }) else { throw SyncError.conflict }
+            try catalog.publishSnapshot(token)
+            return try catalog.anchor() != before
         } catch {
-            var failed = (try? catalog.state("status", as: SyncStatus.self)) ?? status
-            failed.syncing = false; failed.message = error.localizedDescription
-            try? catalog.setState("status", value: failed)
+            status.syncing = false; status.message = error.localizedDescription
+            try? catalog.setState("status",value: status)
             throw error
         }
     }
-
-    private func resolvePaths() async throws {
-        // One in-flight metadata request, at most 100 exact IDs. This also resumes initial
-        // indexing after a crash, without scanning folders or maintaining a second cursor.
-        while true {
-            try checkRunning(); try Task.checkCancellation()
-            let work = try catalog.pathWork(sessionID: account.sessionID, userID: account.userID)
-            if work.isEmpty { return }
-            do {
-                let assets = try await remote.assetPaths(ids: work.map(\.id))
-                try checkRunning(); try Task.checkCancellation()
-                try catalog.resolvedPaths(assets, work: work, userID: account.userID, sessionID: account.sessionID)
-            } catch {
-                try? catalog.failedPaths(work, sessionID: account.sessionID)
-                throw error
-            }
-        }
+    private func scan(_ folder: CloudFile, token: String, visited: inout Set<String>) async throws {
+        try check()
+        guard folder.path.count < 256, visited.insert(folder.id).inserted else { throw SyncError.invalidResponse }
+        let children = try await remote.children(folder)
+        try catalog.stage(children.map { .record($0,parentID: folder.id) },token: token)
+        for child in children where child.isDirectory { try await scan(child,token: token,visited: &visited) }
+        let after = try await remote.properties(space: folder.space,path: folder.path)
+        guard after.fileID == folder.fileID, after.etag == folder.etag else { throw SyncError.conflict }
     }
-
-    private func flushAcknowledgements() async throws {
-        let pending = try catalog.pendingAcknowledgements()
-        if !pending.isEmpty {
-            try checkRunning()
-            try await remote.acknowledge(pending)
-            try catalog.acknowledged(pending, sessionID: account.sessionID)
-        }
+    private func current(_ record: ItemRecord, version: Data? = nil) async throws -> CloudFile {
+        guard let known = record.remote else { throw SyncError.unsupportedLocation }
+        let current = try await remote.properties(space: known.space,path: known.path)
+        guard current.id == known.id, version.map({ Data(current.etag.utf8) == $0 }) ?? true else { throw SyncError.conflict }
+        return current
     }
-    private func supportedTypes() async throws -> MediaTypes {
-        if let types = try catalog.state("mediaTypes", as: MediaTypes.self) { return types }
-        let types = try await remote.mediaTypes()
-        try catalog.setState("mediaTypes", value: types)
-        return types
-    }
-    private func commit(_ changes: [LocalChange]) throws {
-        try checkRunning(); try Task.checkCancellation()
-        try catalog.commitLocal(changes, userID: account.userID, sessionID: account.sessionID)
-    }
-    private func requireOwned(_ asset: Asset) throws {
-        guard asset.ownerId == account.userID else { throw SyncError.invalidResponse }
-    }
-
-    public func download(id: String, directory: URL, progress: Progress, requestedVersion: Data? = nil) async throws -> (URL, ItemRecord) {
-        try checkRunning(); try Task.checkCancellation()
+    public func download(id: String, directory: URL, progress: Progress, requestedVersion: Data? = nil) async throws -> (URL,ItemRecord) {
+        try check()
         let record = try catalog.item(id)
-        if record.kind == .ignoredFile {
-            let destination = directory.appendingPathComponent(UUID().uuidString)
-            try FileManager.default.copyItem(at: localURL(record.id), to: destination)
-            progress.completedUnitCount = progress.totalUnitCount
-            return (destination, record)
-        }
-        guard let known = record.asset else { throw SyncError.unsupported }
-        let latest = try await remote.asset(known.id)
-        guard latest.ownerId == known.ownerId, !latest.isTrashed else { throw SyncError.missingItem }
-        if let requestedVersion, requestedVersion != latest.contentVersion { throw SyncError.conflict }
-        let url = try await remote.download(latest, into: directory, progress: progress)
-        // Path reconciliation can run during a download. Return the current appearance,
-        // retaining its identity and parent instead of rebuilding the old flat projection.
+        let file = try await current(record,version: requestedVersion ?? record.contentVersion)
+        guard !file.isDirectory else { throw SyncError.unsupported }
+        let url = try await remote.download(file,into: directory,progress: progress)
         do {
-            var current = try catalog.item(id)
-            guard current.asset?.id == latest.id else { throw SyncError.missingItem }
-            if let requestedVersion, current.contentVersion != requestedVersion { throw SyncError.conflict }
-            current.asset = latest
-            return (url, current)
-        } catch {
-            try? FileManager.default.removeItem(at: url)
-            throw error
+            try check()
+            let current = try catalog.item(id)
+            guard current.contentVersion == Data(file.etag.utf8) else { throw SyncError.conflict }
+            return (url,current)
         }
+        catch { try? FileManager.default.removeItem(at: url); throw error }
     }
+    public func thumbnail(id: String, large: Bool) async throws -> Data? { nil }
 
-    public func thumbnail(id: String, large: Bool) async throws -> Data? {
-        try checkRunning(); try Task.checkCancellation()
-        guard let asset = try catalog.item(id).asset else { return nil }
-        return try await remote.thumbnail(asset.id, large: large)
+    private func contentURL(_ edit: PendingEdit) -> URL {
+        catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true).appendingPathComponent("content",isDirectory: true).appendingPathComponent(ItemRecord.localName(edit.filename))
     }
-
+    private func save(_ edit: PendingEdit) throws {
+        try catalog.saveOperation(edit)
+        let directory = catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,withIntermediateDirectories: true,attributes: [.posixPermissions: 0o700])
+        try JSONEncoder().encode(edit).write(to: directory.appendingPathComponent("operation.json"),options: .atomic)
+    }
+    private func stage(sourceID: String?, parentID: String, filename: String, contents: URL?, baseVersion: Data?) throws -> PendingEdit {
+        let hash = try contents.map { try FileDigest.sha256($0).map { String(format: "%02x",$0) }.joined() }
+        let key = RemotePath.digest([sourceID ?? "create",parentID,filename,hash ?? "directory",baseVersion?.base64EncodedString() ?? ""].joined(separator: "\0"))
+        if let existing = try catalog.operation(key) { return existing }
+        let edit = PendingEdit(id: key,sourceID: sourceID,parentID: parentID,filename: filename,hash: hash,baseVersion: baseVersion,createdAt: Date())
+        let folder = catalog.localDirectory.appendingPathComponent(key,isDirectory: true)
+        try FileManager.default.createDirectory(at: folder,withIntermediateDirectories: true,attributes: [.posixPermissions: 0o700])
+        if let contents {
+            let staged = contentURL(edit)
+            try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(),withIntermediateDirectories: true,attributes: [.posixPermissions: 0o700])
+            let temporary = folder.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try FileManager.default.copyItem(at: contents,to: temporary)
+            let file = try FileHandle(forWritingTo: temporary)
+            try file.synchronize(); try file.close()
+            // An interrupted staging operation may leave a file without a database entry.
+            if FileManager.default.fileExists(atPath: staged.path) { try FileManager.default.removeItem(at: staged) }
+            try FileManager.default.moveItem(at: temporary,to: staged)
+        }
+        try save(edit)
+        return edit
+    }
+    private func finish(_ edit: PendingEdit) throws {
+        try catalog.finishOperation(edit.id)
+        try? FileManager.default.removeItem(at: catalog.localDirectory.appendingPathComponent(edit.id,isDirectory: true))
+    }
     public func create(parentID: String, filename: String, directory: Bool, contents: URL?, progress: Progress) async throws -> ItemRecord {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        try checkRunning(); try Task.checkCancellation()
-        if directory {
-            guard parentID == ItemRecord.albumsID else {
-                return try saveLocal(parentID: parentID, filename: filename, contents: nil)
-            }
-            let album = try await remote.createAlbum(name: filename)
-            try commit([.album(album)])
-            return try catalog.item(ItemRecord.albumID(album.id))
+        let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
+        try RemotePath.validate([filename])
+        guard directory || contents != nil else { throw SyncError.unsupported }
+        // Stage before checking connectivity, pause, or parent availability.
+        var edit = try stage(sourceID: nil,parentID: parentID,filename: filename,contents: contents,baseVersion: nil)
+        try check()
+        let parent = try await current(catalog.item(parentID))
+        let file: CloudFile
+        if let uploaded = edit.uploaded {
+            file = try await remote.properties(space: uploaded.space,path: uploaded.path)
+            guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
+        } else {
+            file = try await directory ? remote.makeDirectory(parent: parent,name: filename) : remote.put(parent: parent,name: filename,contents: contentURL(edit),replacing: nil,progress: progress)
+            edit.uploaded = file; try save(edit)
         }
-        let parent = try catalog.item(parentID)
-        guard parent.isFolder, parent.kind != .root else { throw SyncError.unsupportedLocation }
-        let types = try await supportedTypes()
-        if parent.kind == .ignoredFolder || parent.kind == .externalFolder || parent.kind == .albums || !types.supports(filename: filename) {
-            guard let contents else { throw SyncError.unsupported }
-            return try saveLocal(parentID: parentID, filename: filename, contents: contents)
-        }
-        guard let contents else { throw SyncError.unsupported }
-        let asset = try await remote.upload(contents, filename: filename, progress: progress)
-        try requireOwned(asset)
-        if let albumID = parent.albumID { try await remote.add(asset.id, to: albumID) }
-        var changes: [LocalChange] = [.asset(asset)]
-        if let albumID = parent.albumID { changes.append(.membership(album: albumID, asset: asset.id, present: true)) }
-        try commit(changes)
-        return try catalog.item(ItemRecord.assetID(asset.id, albumID: parent.albumID))
+        let record = try catalog.commit(file,parentID: parentID)
+        try finish(edit)
+        return record
     }
-
-    private struct EditJournal: Codable {
-        var targetID: String
-        var source: ItemRecord
-        var associationsCopied: Bool = false
-        var sourceTrashed: Bool = false
-    }
-
-    public func modify(id: String, baseContentVersion: Data, filename: String?, parentID: String?,
-                       contents: URL?, progress: Progress) async throws -> ItemRecord {
+    public func modify(id: String, baseContentVersion: Data, filename: String?, parentID: String?, contents: URL?, progress: Progress) async throws -> ItemRecord {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        try checkRunning(); try Task.checkCancellation()
-        let record: ItemRecord
-        if let found = try? catalog.item(id) { record = found }
-        else if let contents, let assetID = id.split(separator: ":").last,
-                let edit = try catalog.state("edit:\(assetID):\(FileDigest.sha1(contents).base64EncodedString())", as: EditJournal.self) {
-            record = edit.source
-        } else { throw SyncError.missingItem }
-        if record.isLocalOnly {
-            let destination = parentID ?? record.parentID
-            let name = filename ?? record.filename
-            let types = try await supportedTypes()
-            let parent = try catalog.item(destination)
-            if record.kind == .ignoredFile, types.supports(filename: name), parent.kind == .library || parent.kind == .folder || parent.kind == .album {
-                let uploaded = try await remote.upload(contents ?? localURL(id), filename: name, progress: progress)
-                try requireOwned(uploaded)
-                if let albumID = parent.albumID { try await remote.add(uploaded.id, to: albumID) }
-                var changes: [LocalChange] = [.asset(uploaded)]
-                if let albumID = parent.albumID { changes.append(.membership(album: albumID, asset: uploaded.id, present: true)) }
-                try commit(changes)
-                try removeLocal(record)
-                return try catalog.item(ItemRecord.assetID(uploaded.id, albumID: parent.albumID))
-            }
-            return try saveLocal(parentID: destination, filename: name, contents: contents,
-                existing: record)
-        }
-        if record.kind == .album {
-            guard parentID == nil || parentID == ItemRecord.albumsID else { throw SyncError.unsupportedLocation }
-            if let filename, let albumID = record.albumID {
-                let suffix = " [\(albumID)]"
-                let name = filename.hasSuffix(suffix) ? String(filename.dropLast(suffix.count)) : filename
-                let album = try await remote.renameAlbum(albumID, name: name)
-                try commit([.album(album)])
-            }
-            return try catalog.item(id)
-        }
-        if record.kind == .folder || record.kind == .externalFolder { throw SyncError.serverOrganization }
-        guard let original = record.asset, original.isMutable else { throw SyncError.unsupported }
-        // Immich intentionally has no original filename rename endpoint. Do not pretend it does.
-        guard filename == nil || filename == record.filename else { throw SyncError.serverOrganization }
-        var targetAlbumID = record.albumID
-        if let parentID {
-            let destination = try catalog.item(parentID)
-            if destination.kind == .album {
-                targetAlbumID = destination.albumID
-            } else if record.albumID != nil, destination.kind == .library || destination.kind == .folder {
-                // Leaving an album changes membership; it cannot choose the server directory.
-                targetAlbumID = nil
-            } else if parentID != record.parentID {
-                throw SyncError.serverOrganization
+        let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
+        // Preserve bytes even if the remote item was removed while this edit was offline.
+        let cached = try? catalog.item(id)
+        let targetParent = parentID ?? cached?.parentID ?? ItemRecord.rootID
+        let targetName = filename ?? cached?.remote?.name ?? "Recovered edit"
+        if let filename { try RemotePath.validate([filename]) }
+        var edit = try stage(sourceID: id,parentID: targetParent,filename: targetName,contents: contents,baseVersion: baseContentVersion)
+        try check()
+        guard let record = cached, let known = record.remote, !known.path.isEmpty else { throw SyncError.conflict }
+        var file: CloudFile
+        if let uploaded = edit.uploaded {
+            file = try await remote.properties(space: uploaded.space,path: uploaded.path)
+            guard file.id == uploaded.id, file.etag == uploaded.etag else { throw SyncError.conflict }
+        } else {
+            do { file = try await current(record,version: baseContentVersion) }
+            catch SyncError.missingItem { throw SyncError.conflict }
+            if contents != nil {
+                let originalParent = try await current(catalog.item(record.parentID))
+                file = try await remote.put(parent: originalParent,name: known.name,contents: contentURL(edit),replacing: file,progress: progress)
+                edit.uploaded = file; try save(edit)
             }
         }
-        var asset = original
-        if let contents {
-            let types = try await supportedTypes()
-            guard types.supports(filename: original.originalFileName) else { throw SyncError.unsupported }
-            let hash = try FileDigest.sha1(contents).base64EncodedString()
-            let journalKey = "edit:\(original.id):\(hash)"
-            var journal = try catalog.state(journalKey, as: EditJournal.self)
-            if journal == nil {
-                let current = try await remote.asset(original.id)
-                guard !current.isTrashed, current.contentVersion == baseContentVersion else { throw SyncError.conflict }
-                asset = try await remote.upload(contents, filename: original.originalFileName, progress: progress)
-                try requireOwned(asset)
-                if asset.id != original.id {
-                    journal = EditJournal(targetID: asset.id, source: record)
-                    try catalog.setState(journalKey, value: journal!)
-                }
-            }
-            if var edit = journal {
-                asset = try await remote.asset(edit.targetID)
-                guard !asset.isTrashed, asset.checksum == hash else { throw SyncError.conflict }
-                if !edit.associationsCopied {
-                    try checkRunning(); try Task.checkCancellation()
-                    try await remote.copyAssociations(from: original.id, to: asset.id)
-                    edit.associationsCopied = true
-                    try catalog.setState(journalKey, value: edit)
-                }
-                if !edit.sourceTrashed {
-                    try checkRunning(); try Task.checkCancellation()
-                    let current: Asset?
-                    do { current = try await remote.asset(original.id) } catch SyncError.missingItem { current = nil }
-                    if let current, !current.isTrashed {
-                        guard current.contentVersion == baseContentVersion else { throw SyncError.conflict }
-                        // Immich has no conditional delete. This final check narrows the race;
-                        // the old original always goes to recoverable trash, never force delete.
-                        try await remote.trash(original.id)
-                    }
-                    edit.sourceTrashed = true
-                    try catalog.setState(journalKey, value: edit)
-                }
-            }
+        let parent = try await current(catalog.item(targetParent))
+        let name = filename == nil || filename == record.filename ? known.name : targetName
+        if !RemotePath.equal(file.path,parent.path + [name]) {
+            file = try await remote.move(file,parent: parent,name: name)
+            edit.uploaded = file; try save(edit)
         }
-        if targetAlbumID != record.albumID {
-            if let targetAlbumID { try await remote.add(asset.id, to: targetAlbumID) }
-            if let oldAlbumID = record.albumID { try await remote.remove(asset.id, from: oldAlbumID) }
-        }
-        var changes: [LocalChange] = asset.id == original.id ? [.asset(asset)] : [.replaceAsset(source: original.id, target: asset)]
-        if targetAlbumID != record.albumID {
-            if let targetAlbumID { changes.append(.membership(album: targetAlbumID, asset: asset.id, present: true)) }
-            if let old = record.albumID { changes.append(.membership(album: old, asset: asset.id, present: false)) }
-        }
-        try commit(changes)
-        return try catalog.item(ItemRecord.assetID(asset.id, albumID: targetAlbumID))
+        let updated = try catalog.commit(file,parentID: targetParent)
+        try finish(edit)
+        return updated
     }
-
     public func delete(id: String, baseContentVersion: Data?, recursive: Bool) async throws {
         try await gate.acquire(); defer { Task { await gate.release() } }
-        try checkRunning(); try Task.checkCancellation()
+        try check()
+        let lease = try catalog.acquireSyncLock(); defer { catalog.releaseSyncLock(lease) }
         let record: ItemRecord
         do { record = try catalog.item(id) } catch SyncError.missingItem { return }
-        if record.isLocalOnly {
-            let removed = try catalog.removeLocalTree(id, recursive: recursive)
-            for local in removed where local.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(local.id)) }
-            return
-        }
-        if record.kind == .folder || record.kind == .externalFolder { throw SyncError.serverOrganization }
-        if record.kind == .album, let albumID = record.albumID {
-            if !recursive, try catalog.hasChildren(id) { throw SyncError.unsupportedLocation }
-            // Deleting an album never deletes the photos inside it.
-            do { try await remote.deleteAlbum(albumID) } catch SyncError.missingItem { }
-            try commit([.deleteAlbum(albumID)])
-        } else if let asset = record.asset, asset.isMutable {
-            if let albumID = record.albumID {
-                try await remote.remove(asset.id, from: albumID)
-                try commit([.membership(album: albumID, asset: asset.id, present: false)])
-            } else {
-                let latest: Asset
-                do { latest = try await remote.asset(asset.id) }
-                catch SyncError.missingItem { try commit([.trashAsset(asset.id)]); return }
-                if !latest.isTrashed {
-                    guard baseContentVersion == nil || latest.contentVersion == baseContentVersion else { throw SyncError.conflict }
-                    try await remote.trash(asset.id)
-                }
-                try commit([.trashAsset(asset.id)])
-            }
-        } else { throw SyncError.unsupported }
+        let descendants = try catalog.descendants([id])
+        let ids = Set(descendants.map(\.id))
+        guard recursive || descendants.count <= 1 else { throw SyncError.unsupportedLocation }
+        guard try !catalog.recoveryOperations().contains(where: { ids.contains($0.sourceID ?? "") || ids.contains($0.parentID) }) else { throw SyncError.conflict }
+        let file = try await current(record,version: baseContentVersion ?? record.contentVersion)
+        do { try await remote.delete(file) } catch SyncError.missingItem { }
+        try catalog.removeTree(id)
     }
-
-    private func localURL(_ id: String) throws -> URL {
-        guard id.hasPrefix("ignored:"), UUID(uuidString: String(id.dropFirst(8))) != nil else { throw SyncError.missingItem }
-        return catalog.localDirectory.appendingPathComponent(String(id.dropFirst(8)))
-    }
-
-    private func saveLocal(parentID: String, filename: String, contents: URL?, existing: ItemRecord? = nil) throws -> ItemRecord {
-        let parent = try catalog.item(parentID)
-        guard parent.isFolder, parent.kind != .root else { throw SyncError.unsupportedLocation }
-        let siblings = try catalog.localChildren(parentID)
-        let hash = try contents.map { try FileDigest.sha1($0).base64EncodedString() } ?? existing?.localHash
-        if existing == nil, let match = siblings.first(where: { $0.isLocalOnly && $0.parentID == parentID && $0.filename == filename && $0.localHash == hash }) {
-            return match
-        }
-        var record = existing ?? ItemRecord(id: "ignored:" + UUID().uuidString, parentID: parentID, filename: filename,
-            kind: contents == nil ? .ignoredFolder : .ignoredFile, modifiedAt: "")
-        record.parentID = parentID; record.filename = filename
-        record.modifiedAt = ISO8601DateFormatter().string(from: Date())
-        if let contents {
-            try FileManager.default.createDirectory(at: catalog.localDirectory, withIntermediateDirectories: true)
-            let staging = catalog.localDirectory.appendingPathComponent(UUID().uuidString + ".staging")
-            defer { try? FileManager.default.removeItem(at: staging) }
-            try FileManager.default.copyItem(at: contents, to: staging)
-            let destination = try localURL(record.id)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
-            } else { try FileManager.default.moveItem(at: staging, to: destination) }
-            record.localHash = hash
-            record.localSize = (try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value
-        }
-        try catalog.saveLocal(record)
-        return try catalog.item(record.id)
-    }
-    private func removeLocal(_ record: ItemRecord) throws {
-        _ = try catalog.removeLocalTree(record.id, recursive: false)
-        if record.kind == .ignoredFile { try? FileManager.default.removeItem(at: localURL(record.id)) }
-    }
+    public func createSharingLink(id: String) async throws -> URL { try check(); return try await remote.createLink(current(catalog.item(id))) }
+    public func sharingPage(id: String) async throws -> URL { try check(); return try await remote.webURL(current(catalog.item(id))) }
 }

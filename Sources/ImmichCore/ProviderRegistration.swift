@@ -38,7 +38,7 @@ public struct ProviderRegistration: Sendable {
         // Querying domains also establishes the system's domain-change notifications.
         let existing = try await registry.domains()
         guard let account else { return .signInRequired }
-        let name = "Immich — \(account.displayName)"
+        let name = "OpenCloud — \(account.displayName)"
         if let domain = existing.first(where: { $0.id == account.id }), domain.displayName == name {
             return domain.userEnabled ? .ready : .needsEnablement
         }

@@ -1,104 +1,46 @@
 # Integration testing
 
-Use macOS 14 or later, Xcode, Python 3, Docker Engine, and Docker Compose 2.24.4 or later (for `!override`). The signed smoke test additionally needs an Apple Development identity and matching Team-ID-prefixed App Groups. Use FileVault for stored credentials and media.
+`sh scripts/check.sh` builds the Swift package, runs local tests, regenerates the Xcode project, and validates property lists. Tests cover namespace-aware DAV parsing, exact path mapping, precondition headers, server identity continuity, multi-client conflicts, incomplete scans, durable recovery, interrupted upload/move resumption, permissions, availability policies, credential-store security, and provider registration.
 
-## Disposable local server
+Live sync tests use a disposable OpenCloud instance. Immich action contract tests use indexed IDs and never exercise a native media upload path.
 
-The harness uses the [official v3.3.5 release Compose file](https://github.com/immich-app/immich/releases/download/v3.3.5/docker-compose.yml), vendored unchanged with a SHA-256 check. It runs the version-matched server and machine-learning images, official pinned VectorChord/pgvectors Postgres image, and pinned Valkey image. The override adds dependency health checks, isolated names/volumes, and localhost-only port publication. Machine-learning inference is disabled during seeding; that service still runs and must become healthy.
+## Live OpenCloud API suite
 
-The harness supports the Compose plugin or Homebrew's `docker-compose` executable. It uses the active Docker context and limits container and volume changes to its Compose project.
+Run a disposable OpenCloud server on loopback with an app token for a writable test space. This is a test-only account. Its server configuration must support the published WebDAV and Libre Graph endpoints. The suite creates and removes only a UUID-named test directory.
 
-```sh
-python3 scripts/integration.py up      # start all services and wait for health/version
-python3 scripts/integration.py ready   # check the HTTP API and exact server version
-python3 scripts/integration.py seed    # create synthetic media, accounts, album, folders
-python3 scripts/integration.py test    # reset this stack, seed, run unsigned live tests
-python3 scripts/integration.py status
-python3 scripts/integration.py logs
-python3 scripts/integration.py server-stop
-python3 scripts/integration.py server-start
-python3 scripts/integration.py reset   # delete this stack's volumes/local test data; start and seed
-python3 scripts/integration.py down    # remove containers; retain volumes/local test data
-python3 scripts/integration.py clean   # remove this stack's containers, volumes, and local test data
-```
+Set these environment variables without saving credentials in tracked files:
 
-Access the web UI at `http://127.0.0.1:22830`. To change the port, set `IMMICH_TEST_PORT` before the first startup; resets retain the selected port. The Compose project is always `immich-sync-integration`. Existing Immich environment variables cannot replace its pinned images, mounts, or credentials.
-
-All generated files are under ignored `build/integration` (mode `0700`), including random disposable credentials in `config.json`/`.env` (mode `0600`), synthetic PNGs, external-library folders, seed IDs, local SQLite catalogs, `test.log`, and `result.json`. Postgres, uploads, and model cache use project-scoped Docker volumes. Seeding is idempotent after completion; use `reset` after an interrupted seed. Never use real accounts or media with this harness. `test` resets its disposable data on every invocation; ordinary `swift test` skips the live test.
-
-## Automated live coverage
-
-The opt-in XCTest calls `ImmichAPI`, `SyncEngine`, `Catalog`, and `FileCredentialStore`. Assertions inspect local state and server responses; a separate login/catalog checks that client writes reached Immich. Fault wrappers drop responses or interrupt stream delivery without faking server state.
-
-| Area | Assertions |
-| --- | --- |
-| Authentication/storage | Accepted/rejected passwords, dedicated session identity, logout/revocation; credential round-trip, owner/mode/backup exclusion, deletion, catalog secret exclusion |
-| Bootstrap/incremental | Originals, owned albums/memberships, external folder projection, foreign/locked filtering, server-side additions and album rename, idle sync without path searches |
-| Media | Byte-exact originals, SHA-1 verification, rejection of incorrect checksum without delivering a file, decodable thumbnail |
-| Uploads/albums | Uploads and deduplication; creation, rename, membership move/removal, album deletion retaining originals |
-| Edits/deletion | Replacement content, copied favorite/album associations, pin retention; lost copy response and restart without reupload; trash/restore and permanent server deletion |
-| Recovery | Lost acknowledgement response/replay, interrupted stream completion, deleted server checkpoints, explicit reset, new catalog rebuild, stable appearances/local-only content retention, container stop/restart |
-
-The stream interruption is at a decoded batch boundary; the copy/ack faults occur after the server succeeds. These do not test a truncated TCP byte stream or a process killed mid-upload. The dataset is small and synthetic, not a performance benchmark.
-
-## Local checks
+- `OPENCLOUD_INTEGRATION=1`
+- `OPENCLOUD_TEST_SERVER` — loopback base URL
+- `OPENCLOUD_TEST_USERNAME` — app-token login name or user UUID
+- `OPENCLOUD_TEST_TOKEN` — app token
+- `OPENCLOUD_TEST_SPACE` — optional exact space ID; otherwise the first member space
 
 ```sh
-sh scripts/check.sh
+python3 scripts/integration.py test
 ```
 
-Unsigned app and extension build for Apple Silicon:
+The suite checks ordinary-file upload/download, a second client's edit, server rejection of stale writes/deletes, preserved local recovery, server-side rename identity, and sharing links. Without the opt-in it skips explicitly. Loopback is required to keep live mutations away from production accounts. No Docker daemon or live credentials are assumed by the default suite.
 
-```sh
-xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
-  -configuration Debug -destination 'generic/platform=macOS' \
-  -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO \
-  ONLY_ACTIVE_ARCH=NO ARCHS=arm64 build
-```
+## Signed provider smoke
 
-## Signed main-app/provider smoke
+Build a separately signed Debug app with a bundle prefix ending in `.integration` and install it in Applications. Enable its File Provider in System Settings. Use the executable/product filename configured by the build scripts.
 
-```sh
-python3 scripts/integration.py up
-python3 scripts/integration.py seed
-IMMICH_SIGNING_TEAM=YOUR_TEAM_ID python3 scripts/integration.py smoke
-```
+Set `OPENCLOUD_SMOKE_SERVER` to a disposable HTTP loopback server, `OPENCLOUD_SMOKE_USERNAME`, and `OPENCLOUD_SMOKE_TOKEN`. Also set `OPENCLOUD_SMOKE_ITEM` to an existing Finder catalog ID (`cloud:` plus the SHA-256 of space ID, NUL and DAV file ID), and `OPENCLOUD_SMOKE_CHECKSUM` to the file's base64 SHA-1. Launch the signed app executable with `--integration-smoke`.
 
-This performs one signed Debug build, verifies signatures, installs `~/Applications/Immich Sync Integration.app`, and registers its extension. It uses the isolated `app.immich.sync.integration` bundle prefix and App Group. On first use, enable **Immich Sync Integration** in System Settings → General → Login Items & Extensions → File Providers. The run times out after four minutes if macOS permission/enablement is still pending; enable it and rerun.
+The harness exercises main-app setup, cross-process credential access, actual provider enumeration, coordinated hydration/checksum verification, and disconnect with preserved data. App-token revocation remains a server settings action. Run this only with the separately identified disposable integration app/account.
 
-The Debug-only `--integration-smoke` entry point is restricted to the integration bundle and loopback HTTP. It invokes the main app's password sign-in and disconnect, checks App Group credentials and session identity, accesses the File Provider root, waits for embedded-provider indexing, and reads a downloaded original with a known checksum. Disconnect must remove credentials and revoke the server session. No smoke hook is compiled into Release builds.
+## Manual Finder and Immich checks
 
-The app remains installed for manual checks. Disconnect keeps downloaded content; remove the synthetic retained copy in Finder after inspection, and remove the integration app when finished. `clean` removes Docker data and unsigned test catalogs, not the installed app, its macOS container, or preserved downloads.
+1. Browse at least two spaces; create ordinary files, dotfiles and nested folders. Confirm server names match unless the local filesystem requires disambiguation.
+2. Rename/reparent files and directories within a space. Check stable placeholders, descendant paths and inherited availability. Exercise a case-only rename separately; destination collision remains a recoverable failure if the server rejects it.
+3. Hydrate a file, pin a nested folder, then go offline. Confirm pinned files open and online-only files report availability errors. Reconnect and verify edits synchronize.
+4. Edit one file on two clients. Confirm the stale client preserves its edit and the server retains its newer version/history. Test upload-response loss, app/extension restart, failed rename after successful upload, and recovery with a new name.
+5. Delete a directory containing pending edits; confirm rejection. Mark a recovered entry resolved after copying it, and confirm its recovery files remain.
+6. Create file/folder OpenCloud links from both app and Finder; copy/open results in the app. Open sharing management and exercise server policy failures.
+7. Configure Immich to index the same backing media through an external library. Discover paths as admin and non-admin. Confirm container-prefix differences require a confirmed mapping and never infer a space by suffix.
+8. Configure multiple roots/libraries. Create albums and media links from a folder and multiple files. Verify existing asset IDs are used, duplicate native originals are absent, skipped files are reported, and ambiguous/unindexed explicit selections fail.
+9. Stop/disconnect Immich and use OpenCloud create/edit/move/share operations outside the media roots. Confirm they remain available.
+10. Disconnect an OpenCloud account with downloaded and unsynced files. Inspect both preserved downloads and retained Recovery folders.
 
-For an ordinary signed build, set `Config/Local.xcconfig` as described in the README:
-
-```sh
-xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync \
-  -configuration Debug -destination 'generic/platform=macOS' \
-  -derivedDataPath build/DerivedData ARCHS=arm64 build
-python3 scripts/verify-signing.py 'build/DerivedData/Build/Products/Debug/Immich Sync.app'
-```
-
-The verification command checks the app and embedded extension signatures, matching Team-ID-prefixed App Groups, sandbox and network entitlements, Hardened Runtime, and absence of provisioning profiles.
-
-## Verified locally
-
-On 2026-11-01, Apple Silicon/macOS 26.6.2: the live suite and signed main-app/provider smoke passed against the disposable Immich 3.3.5 stack. The existing 76 unit tests passed, and unsigned app/extension builds passed for Apple Silicon and Intel. The signed smoke used profile-free Apple Development signing; macOS required the integration provider to be enabled once. Visual Finder interaction was not automated.
-
-## Remaining manual/uncovered checks
-
-- [ ] **Installation:** install the main app in Applications, enable the extension, and confirm one Finder location. Test Open in Finder, app/provider restarts, and a clean user account.
-- [ ] **Authentication:** browser sign-in/cancellation, reauthentication, password-disabled servers, and a real OAuth provider using redirect `immich-sync://oauth` (callback/state validation has unit coverage).
-- [ ] **Credential storage:** audit the signed App Group's ownership/ACLs and backup exclusion; check runtime logs and account metadata for secret leakage beyond the catalog checks above.
-- [ ] **Incremental sync:** large libraries and concurrent changes beyond the synthetic live coverage above.
-- [ ] **Recovery:** truncated network streams, process death mid-mutation, and stale work during live reauthentication (unit coverage exists).
-- [ ] **Folder updates:** upload through Finder, mobile, and web; change storage templates and labels. Verify paths converge, appearance IDs remain stable, and downloaded content and pin settings survive moves.
-- [ ] **Path handling:** test case/Unicode collisions, invalid or unavailable paths, relative paths, and multiple external libraries. Check ownership and locked-asset filtering and external-library read-only behavior.
-- [ ] **Media access:** representative image/video formats, pinned File Provider content offline, and on-demand eviction.
-- [ ] **Uploads:** Finder bulk uploads, large videos, quota exhaustion, HTTP 413, and interrupted transfers.
-- [ ] **Edits:** process death mid-upload/trash, concurrent server edits, Finder pin behavior, and trash-disabled servers.
-- [ ] **Albums and deletion:** repeat the automated mutations through Finder, including rejected operations and concurrent changes.
-- [ ] **Local-only content:** test unsupported files, custom folders, packages, and symlinks. Verify ignored badges, local edits/deletion, and content retention across restarts, resets, and remote folder/album removal.
-- [ ] **Controls and disconnect:** pause/resume, launch at login, offline disconnect, and retained Finder content after app/provider restarts.
-- [ ] **Platform and accessibility:** test two supported macOS releases, VoiceOver, dark appearance, badges, transfer progress, and a notarized Developer ID release.
-- [ ] **Performance:** record initial indexing, idle checks, bulk changes, and request counts with representative library and album sizes.
+Local tests do not establish that these signed Finder workflows or a particular deployment's WebDAV precondition implementation passed. Record the OpenCloud/Immich versions and signed build used when running this checklist.

@@ -13,25 +13,25 @@ import ImmichCore
         do {
             let env = ProcessInfo.processInfo.environment
             guard Bundle.main.bundleIdentifier?.hasSuffix(".integration") == true,
-                  let server = env["IMMICH_SMOKE_SERVER"], let url = URL(string: server),
+                  let server = env["OPENCLOUD_SMOKE_SERVER"], let url = URL(string: server),
                   url.scheme == "http", url.host == "127.0.0.1",
-                  let email = env["IMMICH_SMOKE_EMAIL"], let password = env["IMMICH_SMOKE_PASSWORD"],
-                  let assetID = env["IMMICH_SMOKE_ASSET"], let checksum = env["IMMICH_SMOKE_CHECKSUM"] else {
-                throw Failure.check("Use scripts/integration.py smoke with the isolated integration bundle")
+                  let email = env["OPENCLOUD_SMOKE_USERNAME"], let password = env["OPENCLOUD_SMOKE_TOKEN"],
+                  let assetID = env["OPENCLOUD_SMOKE_ITEM"], let checksum = env["OPENCLOUD_SMOKE_CHECKSUM"] else {
+                throw Failure.check("Use the documented OpenCloud signed smoke workflow with the isolated integration bundle")
             }
             if model.account != nil {
                 await model.disconnect()
                 guard model.account == nil else { throw Failure.check("Previous smoke domain could not be disconnected") }
             }
-            await model.signIn(server: server, email: email, password: password, allowHTTP: true)
+            await model.signIn(server: server, username: email, appToken: password, allowHTTP: true)
             guard model.error == nil, let account = model.account,
                   let manager = NSFileProviderManager(for: model.domain(for: account)) else {
                 throw Failure.check(model.error ?? "Main-app sign-in did not create a File Provider domain")
             }
             let token = try CredentialStore.read(for: account)
-            let api = ImmichAPI(serverURL: account.serverURL, token: { token })
-            guard try await api.currentSessionID() == account.sessionID else { throw Failure.check("Session mismatch") }
-            print("SMOKE PASS main-app password sign-in and App Group credential access")
+            let api = OpenCloudAPI(serverURL: account.serverURL,username: account.email,token: { token })
+            guard try await api.user().id == account.userID else { throw Failure.check("Account mismatch") }
+            print("SMOKE PASS main-app app-token sign-in and App Group credential access")
             let root = try await visibleURL(manager, .rootContainer)
             guard root.startAccessingSecurityScopedResource() else { throw Failure.check("Root security scope unavailable") }
             defer { root.stopAccessingSecurityScopedResource() }
@@ -41,7 +41,7 @@ import ImmichCore
             var found = false
             while Date() < deadline {
                 _ = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-                if (try? catalog.item(ItemRecord.assetID(assetID))) != nil { found = true; break }
+                if (try? catalog.item(assetID)) != nil { found = true; break }
                 try await Task.sleep(for: .seconds(1))
             }
             guard found else {
@@ -49,8 +49,8 @@ import ImmichCore
                 throw Failure.check(status?.message ?? "Provider indexing timed out; enable the integration extension in System Settings")
             }
             let roots = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            guard roots.contains("Folder View"), roots.contains("Albums") else { throw Failure.check("Provider root containers missing") }
-            let file = try await visibleURL(manager, NSFileProviderItemIdentifier(ItemRecord.assetID(assetID)))
+            guard !roots.isEmpty else { throw Failure.check("Provider spaces missing") }
+            let file = try await visibleURL(manager, NSFileProviderItemIdentifier(assetID))
             guard file.startAccessingSecurityScopedResource() else { throw Failure.check("File security scope unavailable") }
             defer { file.stopAccessingSecurityScopedResource() }
             let bytes = try await Task.detached {
@@ -71,9 +71,7 @@ import ImmichCore
             guard model.account == nil else { throw Failure.check(model.error ?? "Disconnect failed") }
             do { _ = try CredentialStore.read(for: account); throw Failure.check("Credential survived disconnect") }
             catch SyncError.missingAccount { }
-            do { _ = try await api.currentSessionID(); throw Failure.check("Session survived disconnect") }
-            catch SyncError.http(401, _) { }
-            print("SMOKE PASS main-app disconnect, credential deletion, server session revocation")
+            print("SMOKE PASS disconnect and credential deletion; revoke app tokens in OpenCloud Settings")
             fflush(stdout)
             exit(0)
         } catch {

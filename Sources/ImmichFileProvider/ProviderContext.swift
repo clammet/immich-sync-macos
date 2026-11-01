@@ -18,7 +18,7 @@ final class ProviderContext: @unchecked Sendable {
             guard let current = try SharedStore.account(), current.id == account.id, current.sessionID == account.sessionID else { throw SyncError.missingAccount }
             if current.paused { throw SyncError.paused }
         }
-        let api = ImmichAPI(serverURL: account.serverURL, token: {
+        let api = OpenCloudAPI(serverURL: account.serverURL, username: account.email, token: {
             try validate()
             return try CredentialStore.read(for: account)
         })

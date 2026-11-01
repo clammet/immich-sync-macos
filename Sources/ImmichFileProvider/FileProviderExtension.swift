@@ -59,7 +59,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         }
         return run(context: context) { context, progress in
             do {
-                // Packages and symlinks are local-only, even if their names resemble media files.
+                // Packages and symlinks require semantics this WebDAV client does not implement.
                 guard itemTemplate.contentType == .folder || itemTemplate.contentType?.conforms(to: .data) == true,
                       itemTemplate.contentType != .symbolicLink, itemTemplate.contentType?.conforms(to: .package) != true else { throw SyncError.unsupported }
                 let item = try await context.engine.create(parentID: ProviderItem.id(itemTemplate.parentItemIdentifier),
@@ -102,7 +102,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                 // Restore rejected deletions in Finder. Excluded imports have no catalog row and are a no-op above.
                 let reject: Bool
                 switch error {
-                case SyncError.unsupported, SyncError.unsupportedLocation, SyncError.serverOrganization, SyncError.conflict, SyncError.trashDisabled: reject = true
+                case SyncError.unsupported, SyncError.unsupportedLocation, SyncError.conflict: reject = true
                 default: reject = false
                 }
                 if reject, let record = try? context.engine.catalog.item(ProviderItem.id(identifier)),
@@ -145,19 +145,44 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         guard case .success(let context) = contextResult else { completionHandler(ProviderErrors.map(SyncError.missingAccount)); return Progress(totalUnitCount: 0) }
         return run(context: context) { context, progress in
             do {
-                for identifier in itemIdentifiers {
-                    try Task.checkCancellation()
-                    let id = ProviderItem.id(identifier)
-                    switch actionIdentifier.rawValue {
-                    case "app.immich.sync.keep": try context.engine.catalog.pin(id, value: true)
-                    case "app.immich.sync.automatic": try context.engine.catalog.pin(id, value: false)
-                    case "app.immich.sync.inherit": try context.engine.catalog.pin(id, value: nil)
-                    default: throw SyncError.unsupported
-                    }
-                    context.signal()
+                if actionIdentifier.rawValue.hasPrefix("app.opencloud.") {
+                    try context.engine.catalog.setState("actionResult",value: ActionResult(title: "Running Finder action…",urls: []))
                 }
+                let ids = itemIdentifiers.map(ProviderItem.id)
+                switch actionIdentifier.rawValue {
+                case "app.opencloud.sync.link", "app.opencloud.sync.sharing":
+                    var urls: [URL] = []
+                    for id in ids {
+                        let url = try await actionIdentifier.rawValue.hasSuffix(".link") ? context.engine.createSharingLink(id: id) : context.engine.sharingPage(id: id)
+                        urls.append(url)
+                        // Preserve each successful result if another item fails later.
+                        try context.engine.catalog.setState("actionResult",value: ActionResult(title: "OpenCloud sharing",urls: urls))
+                    }
+                case "app.opencloud.sync.immichAlbum", "app.opencloud.sync.immichLink":
+                    guard let account = try SharedStore.immichAccount() else { throw SyncError.mediaMappingRequired }
+                    let api = ImmichAPI(serverURL: account.serverURL,token: { try CredentialStore.read(for: account) },apiKey: account.credentialKind == "apiKey")
+                    let mappings = try context.engine.catalog.mediaMappings(for: account)
+                    let name = actionIdentifier.rawValue.hasSuffix("immichAlbum") ? (ids.count == 1 ? try context.engine.catalog.item(ids[0]).filename : "Finder selection") : nil
+                    let result = try await MediaActions(remote: api).perform(itemIDs: ids,catalog: context.engine.catalog,mappings: mappings,albumName: name)
+                    try context.engine.catalog.setState("actionResult",value: result)
+                default:
+                    for id in ids {
+                        try Task.checkCancellation()
+                        switch actionIdentifier.rawValue {
+                        case "app.immich.sync.keep": try context.engine.catalog.pin(id,value: true)
+                        case "app.immich.sync.automatic": try context.engine.catalog.pin(id,value: false)
+                        case "app.immich.sync.inherit": try context.engine.catalog.pin(id,value: nil)
+                        default: throw SyncError.unsupported
+                        }
+                    }
+                }
+                context.signal()
                 progress.completedUnitCount = 100; completionHandler(nil)
-            } catch { completionHandler(ProviderErrors.map(error)) }
+            } catch {
+                let partial = try? context.engine.catalog.state("actionResult",as: ActionResult.self)
+                try? context.engine.catalog.setState("actionResult",value: ActionResult(title: "Action failed: " + error.localizedDescription,urls: partial?.urls ?? []))
+                completionHandler(ProviderErrors.map(error))
+            }
         }
     }
 }

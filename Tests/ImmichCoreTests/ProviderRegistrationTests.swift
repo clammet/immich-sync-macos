@@ -25,7 +25,7 @@ final class ProviderRegistrationTests: XCTestCase {
     }
     func testExistingEnabledDomainIsReusedAndConsentChangesAreObserved() async throws {
         let account = account()
-        let registry = Registry([RegisteredProviderDomain(id: account.id, displayName: "Immich — Test", userEnabled: true)])
+        let registry = Registry([RegisteredProviderDomain(id: account.id, displayName: "OpenCloud — Test", userEnabled: true)])
         let registration = ProviderRegistration(registry: registry)
         let ready = try await registration.reconcile(account: account)
         XCTAssertEqual(ready, .ready)
@@ -44,7 +44,7 @@ final class ProviderRegistrationTests: XCTestCase {
         let domains = try await registry.domains()
         XCTAssertEqual(domains.count, 2)
         XCTAssertTrue(domains.contains(other))
-        XCTAssertEqual(domains.first { $0.id == account.id }?.displayName, "Immich — Test")
+        XCTAssertEqual(domains.first { $0.id == account.id }?.displayName, "OpenCloud — Test")
     }
     func testDelayedSystemPublicationIsRetriedWithoutAnotherAdd() async throws {
         let registry = Registry(delayed: true)

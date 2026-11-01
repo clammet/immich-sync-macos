@@ -2,250 +2,139 @@ import Foundation
 import XCTest
 @testable import ImmichCore
 
-final class APITests: XCTestCase {
-    func testPasswordLoginCreatesSessionWithoutPersistedCredentialOrAPIKeyHeader() async throws {
-        MockProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/prefix/api/auth/login")
-            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
-            XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
-            let body = try requestBody(request)
-            XCTAssertEqual(body["email"] as? String, "test@example.com")
-            XCTAssertEqual(body["password"] as? String, "password")
-            return .json(["accessToken": "session-token", "userId": "owner", "name": "Test", "userEmail": "test@example.com", "shouldChangePassword": false])
-        }
-        let login = try await api(authenticated: false).login(email: "test@example.com", password: "password")
-        XCTAssertEqual(login.accessToken, "session-token"); XCTAssertEqual(login.userId, "owner")
-    }
-    func testBearerSessionAuthenticatesRequestsAndLogout() async throws {
-        MockProtocol.handler = { request in
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer session-token")
-            XCTAssertNil(request.value(forHTTPHeaderField: "x-api-key"))
-            if request.url!.path.hasSuffix("sessions") { return .json([["id": "mac-session", "current": true],["id": "phone-session", "current": false]]) }
-            XCTAssertEqual(request.httpMethod, "POST"); XCTAssertTrue(request.url!.path.hasSuffix("auth/logout"))
-            return .json(["successful": true])
-        }
-        let client = api(); let id = try await client.currentSessionID()
-        XCTAssertEqual(id, "mac-session"); try await client.logout()
-    }
-    func testOAuthSendsStateAndPKCEAndVerifiesCallbackBeforeExchange() async throws {
-        let challenge = try OAuthChallenge(); var exchanges = 0
-        MockProtocol.handler = { request in
-            let body = try requestBody(request)
-            if request.url!.path.hasSuffix("authorize") {
-                XCTAssertEqual(body["codeChallenge"] as? String, challenge.challenge)
-                XCTAssertEqual(body["state"] as? String, challenge.state)
-                XCTAssertEqual(body["redirectUri"] as? String, "immich-sync://oauth")
-                return .json(["url": "https://identity.example.com/authorize"])
-            }
-            exchanges += 1
-            XCTAssertEqual(body["codeVerifier"] as? String, challenge.verifier)
-            return .json(["accessToken": "session-token", "userId": "owner", "name": "Test", "userEmail": "test@example.com", "shouldChangePassword": false])
-        }
-        let client = api(authenticated: false)
-        let url = try await client.authorizeOAuth(challenge)
-        XCTAssertEqual(url.host, "identity.example.com")
-        do { _ = try await client.finishOAuth(callback: URL(string: "immich-sync://oauth?state=wrong&code=code")!, challenge: challenge); XCTFail("Expected invalid state") }
-        catch SyncError.invalidOAuthCallback { }
-        XCTAssertEqual(exchanges, 0)
-        _ = try await client.finishOAuth(callback: URL(string: "immich-sync://oauth?state=\(challenge.state)&code=code")!, challenge: challenge)
-        XCTAssertEqual(exchanges, 1)
-    }
-    func testNativeStreamUsesCurrentContractAndDecodesFragmentedRecords() async throws {
-        let data = try wireLine("AssetV2", assetData(name: "café.jpg")) + wireLine("SyncCompleteV1")
-        MockProtocol.handler = { request in
-            if let version = versionResponse(request) { return version }
-            XCTAssertEqual(request.url?.path, "/prefix/api/sync/stream")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer session-token")
-            let body = try requestBody(request)
-            XCTAssertEqual(body["reset"] as? Bool, true)
-            let types = body["types"] as! [String]
-            XCTAssertTrue(types.contains("AssetsV2")); XCTAssertFalse(types.contains("AssetsV1"))
-            return Reply(chunks: data.map { Data([$0]) })
-        }
-        let received = EventCollector()
-        try await api().synchronize(reset: true, started: {}, receive: { received.append($0) })
-        XCTAssertEqual(received.events.map(\.kind), [.asset,.complete])
-    }
-    func testStreamCommitIsBoundedAndMissingCompletionFails() async throws {
-        var data = Data()
-        for i in 0..<257 { data.append(try wireLine("AssetV2", assetData("asset-\(i)"), sequence: i+1)) }
-        MockProtocol.handler = { request in versionResponse(request) ?? Reply(chunks: [data]) }
-        let received = EventCollector()
-        do { try await api().synchronize(reset: false, started: {}, receive: { received.append($0) }); XCTFail("Expected incomplete stream") }
-        catch SyncError.invalidSyncStream { }
-        XCTAssertEqual(received.events.count, SyncContract.batchSize)
-        XCTAssertFalse(received.events.contains(where: { $0.kind == .complete }))
-    }
-    func testTruncatedAndUnexpectedMessagesNeverPublishCompletion() async throws {
-        for data in [Data("<html>login</html>\n".utf8),try wireLine("AssetV1", assetData()),Data("{\"type\":\"SyncCompleteV1\"".utf8),
-                     try wireLine("SyncCompleteV1") + wireLine("AssetV2", assetData())] {
-            MockProtocol.handler = { request in versionResponse(request) ?? Reply(chunks: [data]) }
-            let received = EventCollector()
-            do { try await api().synchronize(reset: false, started: {}, receive: { received.append($0) }); XCTFail("Expected protocol failure") }
-            catch SyncError.invalidSyncStream { }
-            XCTAssertFalse(received.events.contains(where: { $0.kind == .complete }))
-        }
-    }
-    func testResetMessageRequestsNewBootstrapWithoutAcknowledgingCompletion() async throws {
-        let data = try wireLine("SyncResetV1")
-        MockProtocol.handler = { request in versionResponse(request) ?? Reply(chunks: [data]) }
-        let received = EventCollector()
-        do { try await api().synchronize(reset: false, started: {}, receive: { received.append($0) }); XCTFail("Expected reset") }
-        catch SyncError.syncReset { }
-        XCTAssertTrue(received.events.isEmpty)
-    }
-    func testExpiredSessionStopsStreamWithoutAcknowledgeOrRetry() async throws {
-        var attempts = 0
-        MockProtocol.handler = { request in
-            if let version = versionResponse(request) { return version }
-            attempts += 1; return Reply(status: 401, mime: "application/json", chunks: [Data("{}".utf8)])
-        }
-        do { try await api().synchronize(reset: false, started: { XCTFail("Must not start") }, receive: { _ in XCTFail("Must not publish") }); XCTFail("Expected reauthentication") }
-        catch SyncError.http(let code, _) { XCTAssertEqual(code, 401) }
-        XCTAssertEqual(attempts, 1)
-    }
-    func testAcknowledgementsUseSessionAndExactOpaqueTokens() async throws {
-        let ack = "AssetV2|00000000-0000-7000-8000-000000000001"
-        MockProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/prefix/api/sync/ack")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer session-token")
-            XCTAssertEqual(try requestBody(request)["acks"] as? [String], [ack])
-            return Reply(status: 204, mime: "application/json", chunks: [])
-        }
-        try await api().acknowledge([ack])
-    }
-    func testDisabledTrashNeverSendsDeletion() async throws {
-        var deleted = false
-        MockProtocol.handler = { request in
-            if request.httpMethod == "DELETE" { deleted = true }
-            return request.url!.path.hasSuffix("features") ? .json(["trash": false]) : .json(["trashDays": 0])
-        }
-        do { try await api().trash("one"); XCTFail("Expected disabled trash") } catch SyncError.trashDisabled { }
-        XCTAssertFalse(deleted)
-    }
-    func testThumbnailDoesNotDownloadOriginal() async throws {
-        MockProtocol.handler = { request in
-            XCTAssertEqual(request.url?.path, "/prefix/api/assets/one/thumbnail")
-            return Reply(status: 200, mime: "image/jpeg", chunks: [Data("preview".utf8)])
-        }
-        let bytes = try await api().thumbnail("one", large: false)
-        XCTAssertEqual(bytes, Data("preview".utf8))
-    }
-    func testExactIDPathLookupUsesStructuredFiltersAndCursorAndIncludesStackedAssets() async throws {
-        let first = "11111111-1111-4111-8111-111111111111", second = "22222222-2222-4222-8222-222222222222"
-        var requests = 0
-        MockProtocol.handler = { request in
-            requests += 1
-            XCTAssertEqual(request.url?.path, "/prefix/api/search/metadata")
-            XCTAssertEqual(request.httpMethod, "POST")
-            let body = try requestBody(request)
-            XCTAssertEqual(body["size"] as? Int, 100)
-            XCTAssertEqual(body["withStacked"] as? Bool, true)
-            XCTAssertEqual(body["withExif"] as? Bool, false)
-            XCTAssertNil(body["id"]); XCTAssertNil(body["page"]); XCTAssertNil(body["withDeleted"])
-            let branches = (body["filter"] as! [String: Any])["or"] as! [[String: [String: String]]]
-            XCTAssertEqual(branches.map { $0["id"]!["eq"]! }, [first,second])
-            XCTAssertEqual(body["cursor"] as? String, requests == 1 ? nil : "opaque-cursor")
-            let asset = makeAsset(requests == 1 ? first : second, path: requests == 1 ? "/upload/tmp.jpg" : "/data/library/2026/server.jpg")
-            let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(asset))
-            return .json(["assets": ["items": [object], "nextCursor": requests == 1 ? "opaque-cursor" as Any : NSNull()]])
-        }
-        let assets = try await api().assetPaths(ids: [first,second])
-        XCTAssertEqual(requests, 2)
-        XCTAssertEqual(assets.map(\.originalPath), ["/upload/tmp.jpg","/data/library/2026/server.jpg"])
-    }
-    func testPathLookupRejectsUnexpectedDuplicateAndNonadvancingPages() async throws {
-        for scenario in 0..<3 {
-            var requests = 0
-            MockProtocol.handler = { _ in
-                requests += 1
-                let id = scenario == 0 ? "unexpected" : "one"
-                let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(id, path: "/data/file.jpg")))
-                return .json(["assets": ["items": scenario == 2 ? [] : [object], "nextCursor": "same-cursor"]])
-            }
-            do { _ = try await api().assetPaths(ids: ["one","two"]); XCTFail("Expected invalid response") }
-            catch SyncError.invalidResponse { }
-            XCTAssertLessThanOrEqual(requests, 2)
-        }
-        MockProtocol.handler = { _ in XCTFail("Invalid batches must not reach server"); return .json([:]) }
-        for ids in [[],["same","same"],(0..<101).map(String.init)] {
-            do { _ = try await api().assetPaths(ids: ids); XCTFail("Expected invalid batch") }
-            catch SyncError.invalidResponse { }
-        }
-    }
-    func testReadOnlyMetadataPostRetriesTransientFailure() async throws {
-        var requests = 0
-        MockProtocol.handler = { _ in
-            requests += 1
-            if requests == 1 { return Reply(status: 503, mime: "application/json", chunks: []) }
-            let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(path: "/data/file.jpg")))
-            return .json(["assets": ["items": [object],"nextCursor": NSNull()]])
-        }
-        let assets = try await api().assetPaths(ids: ["one"])
-        XCTAssertEqual(requests, 2); XCTAssertEqual(assets.first?.originalPath, "/data/file.jpg")
-    }
-    func testUploadReusesChecksumVerificationLookupToCaptureServerPath() async throws {
-        let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
-        let file = folder.appendingPathComponent("new.jpg"); try Data("media".utf8).write(to: file)
-        let checksum = try FileDigest.sha1(file).base64EncodedString()
-        var requests: [String] = []
-        MockProtocol.handler = { request in
-            requests.append(request.httpMethod! + " " + request.url!.path)
-            if request.httpMethod == "POST" { return .json(["id": "one","status": "created"]) }
-            return .json(try JSONSerialization.jsonObject(with: JSONEncoder().encode(makeAsset(checksum: checksum, path: "/upload/owner/temporary.jpg"))))
-        }
-        let asset = try await api().upload(file, filename: "new.jpg", progress: Progress())
-        XCTAssertEqual(asset.originalPath, "/upload/owner/temporary.jpg")
-        XCTAssertEqual(requests, ["POST /prefix/api/assets","GET /prefix/api/assets/one"])
-    }
-    private func api(authenticated: Bool = true) -> ImmichAPI {
-        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
-        return ImmichAPI(serverURL: URL(string: "https://photos.example.com/prefix/api")!,
-            token: { authenticated ? "session-token" : nil }, session: URLSession(configuration: config))
-    }
-}
-
-private func requestBody(_ request: URLRequest) throws -> [String: Any] {
-    var bytes = request.httpBody ?? Data()
-    if let stream = request.httpBodyStream {
-        stream.open(); defer { stream.close() }
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = stream.read(&buffer, maxLength: buffer.count)
-            if count < 0 { throw stream.streamError ?? SyncError.invalidResponse }
-            if count == 0 { break }
-            bytes.append(contentsOf: buffer.prefix(count))
-        }
-    }
-    return try JSONSerialization.jsonObject(with: bytes) as! [String: Any]
-}
-private func versionResponse(_ request: URLRequest) -> Reply? {
-    request.url?.path.hasSuffix("server/version") == true ? .json(["major": 3, "minor": 3, "patch": 5]) : nil
-}
-private struct Reply {
-    var status = 200
-    var mime = "application/jsonlines+json"
-    var chunks: [Data]
-    static func json(_ object: Any) -> Reply { Reply(mime: "application/json", chunks: [try! JSONSerialization.data(withJSONObject: object)]) }
-}
-private final class EventCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [SyncEvent] = []
-    var events: [SyncEvent] { lock.withLock { values } }
-    func append(_ events: [SyncEvent]) { lock.withLock { values.append(contentsOf: events) } }
-}
-private final class MockProtocol: URLProtocol, @unchecked Sendable {
-    static var handler: ((URLRequest) throws -> Reply)!
+final class StubProtocol: URLProtocol, @unchecked Sendable {
+    static var handler: ((URLRequest) throws -> (Int,[String:String],Data))?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
-            let reply = try Self.handler(request)
-            let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: nil, headerFields: ["Content-Type": reply.mime])!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            for chunk in reply.chunks { client?.urlProtocol(self, didLoad: chunk) }
-            client?.urlProtocolDidFinishLoading(self)
-        } catch { client?.urlProtocol(self, didFailWithError: error) }
+            var normalized = request
+            if normalized.httpBody == nil, let stream = normalized.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var bytes = Data(), buffer = [UInt8](repeating: 0,count: 4096)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer,maxLength: buffer.count)
+                    guard count > 0 else { break }; bytes.append(contentsOf: buffer.prefix(count))
+                }
+                normalized.httpBody = bytes
+            }
+            let (status,headers,bytes) = try Self.handler!(normalized)
+            client?.urlProtocol(self,didReceive: HTTPURLResponse(url: request.url!,statusCode: status,httpVersion: nil,headerFields: headers)!,cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self,didLoad: bytes); client?.urlProtocolDidFinishLoading(self)
+        } catch { client?.urlProtocol(self,didFailWithError: error) }
     }
-    override func stopLoading() { }
+    override func stopLoading() {}
+}
+func stubSession() -> URLSession {
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [StubProtocol.self]; return URLSession(configuration: config)
+}
+func davRow(_ href: String, id: String = "file", folder: Bool = false, etag: String = "v1", extra: String = "") -> String {
+    """
+    <d:response><d:href>\(href)</d:href><d:propstat><d:prop><oc:fileid>\(id)</oc:fileid><d:getetag>&quot;\(etag)&quot;</d:getetag><d:resourcetype>\(folder ? "<d:collection/>" : "")</d:resourcetype><d:getcontentlength>4</d:getcontentlength><oc:permissions>RDNVWCK</oc:permissions>\(extra)</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+    """
+}
+func dav(_ rows: String) -> Data { Data("<d:multistatus xmlns:d=\"DAV:\" xmlns:oc=\"http://owncloud.org/ns\">\(rows)</d:multistatus>".utf8) }
+
+final class APITests: XCTestCase {
+    override func tearDown() { StubProtocol.handler = nil }
+    func testDAVDecodesNamespacesPathsAndChecksumsWithoutTreatingNamesAsURLs() throws {
+        let row = davRow("/dav/spaces/storage%24space/a%20%23%25%3F.txt",extra: "<oc:checksums><oc:checksum>SHA1:abcd MD5:other ADLER32:other</oc:checksum></oc:checksums>")
+        let file = try XCTUnwrap(DAVDecoder.decode(dav(row),space: testSpace,requestedURL: testSpace.davURL).first)
+        XCTAssertEqual(file.path,["a #%?.txt"]); XCTAssertEqual(file.fileID,"file")
+        XCTAssertEqual(file.etag,"\"v1\""); XCTAssertEqual(file.checksum,"abcd")
+        XCTAssertEqual(file.url.lastPathComponent,"a #%?.txt"); XCTAssertNil(file.url.query); XCTAssertNil(file.url.fragment)
+    }
+    func testDAVRejectsPartialFailuresForeignRootsEncodedSeparatorsAndMalformedXML() throws {
+        let root = "/dav/spaces/storage%24space/"
+        for data in [
+            dav(davRow(root + "a") + "<d:response><d:href>\(root)b</d:href><d:status>HTTP/1.1 403 Forbidden</d:status></d:response>"),
+            dav(davRow("https://other.example/dav/spaces/storage%24space/a")),
+            dav(davRow("/dav/spaces/other/a")),
+            dav(davRow(root + "a%2Fb")),
+            dav(davRow(root + "%2E%2E/secret")),
+            Data("<d:multistatus".utf8),
+            dav(davRow(root + "a").replacingOccurrences(of: "<d:resourcetype></d:resourcetype>",with: "")),
+            dav(davRow(root + "a").replacingOccurrences(of: "&quot;v1&quot;",with: "W/&quot;weak&quot;"))
+        ] { XCTAssertThrowsError(try DAVDecoder.decode(data,space: testSpace,requestedURL: testSpace.davURL)) }
+    }
+    func testOptionalMissingDAVPropertyDoesNotDiscardSuccessfulProperties() throws {
+        let row = davRow("/dav/spaces/storage%24space/a").replacingOccurrences(of: "</d:response>",with: "<d:propstat><d:prop><oc:checksums/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>")
+        XCTAssertEqual(try DAVDecoder.decode(dav(row),space: testSpace,requestedURL: testSpace.davURL).count,1)
+    }
+    func testSpaceDiscoveryFollowsPaginationAndNeverSendsCredentialsToForeignNextLink() async throws {
+        var count = 0
+        StubProtocol.handler = { r in
+            count += 1
+            XCTAssertEqual(r.value(forHTTPHeaderField: "Authorization"),"Basic " + Data("alice:app-token".utf8).base64EncodedString())
+            let next = count == 1 ? ",\"@odata.nextLink\":\"?page=2\"" : ",\"@odata.nextLink\":\"https://attacker.example/graph/page\""
+            return (200,[:],Data("{\"value\":[]\(next)}".utf8))
+        }
+        let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "app-token" },session: stubSession())
+        do { _ = try await api.spaces(); XCTFail("Expected foreign pagination rejection") } catch {}
+        XCTAssertEqual(count,2)
+        XCTAssertThrowsError(try api.request(url: URL(string: "https://attacker.example/dav")!))
+    }
+    func testRemoteUnicodeCollisionsRemainDistinctBeforeLocalNameDisambiguation() async throws {
+        StubProtocol.handler = { _ in
+            let root = "/dav/spaces/storage%24space/"
+            return (207,[:],dav(davRow(root,id: "root",folder: true) + davRow(root + "caf%C3%A9.jpg",id: "one") + davRow(root + "cafe%CC%81.jpg",id: "two")))
+        }
+        let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "test",token: { "token" },session: stubSession())
+        let children = try await api.children(cloud("root",[],directory: true))
+        XCTAssertEqual(children.count,2)
+        XCTAssertFalse(RemotePath.equal(children[0].path,children[1].path))
+    }
+    func testDAVMutationsUseServerPreconditionsAndNoOverwrite() async throws {
+        let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())
+        let parent = cloud("root",[],directory: true), file = cloud("file",["old.txt"])
+        var methods: [String] = []
+        StubProtocol.handler = { r in
+            methods.append(r.httpMethod!)
+            switch r.httpMethod {
+            case "MOVE":
+                XCTAssertEqual(r.value(forHTTPHeaderField: "If-Match"),"\"v1\"")
+                XCTAssertEqual(r.value(forHTTPHeaderField: "Overwrite"),"F")
+                XCTAssertEqual(r.value(forHTTPHeaderField: "Destination"),testSpace.davURL.appendingPathComponent("new.txt").absoluteString)
+                return (201,[:],Data())
+            case "PROPFIND": return (207,[:],dav(davRow("/dav/spaces/storage%24space/new.txt")))
+            case "DELETE": XCTAssertEqual(r.value(forHTTPHeaderField: "If-Match"),"\"v1\""); return (412,[:],Data())
+            case "MKCOL": XCTAssertEqual(r.value(forHTTPHeaderField: "If-None-Match"),"*"); return (405,[:],Data())
+            default: XCTFail("Unexpected method"); return (500,[:],Data())
+            }
+        }
+        let moved = try await api.move(file,parent: parent,name: "new.txt"); XCTAssertEqual(moved.fileID,"file")
+        do { try await api.delete(file); XCTFail("Expected stale delete") } catch SyncError.conflict {}
+        do { _ = try await api.makeDirectory(parent: parent,name: "exists"); XCTFail("Expected collision") } catch SyncError.conflict {}
+        XCTAssertEqual(methods,["MOVE","PROPFIND","DELETE","MKCOL"])
+    }
+    func testPutCreatesConditionallyAndNeverReplaysRejectedMutations() async throws {
+        let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("data".utf8).write(to: url); defer { try? FileManager.default.removeItem(at: url) }
+        var requests = 0
+        StubProtocol.handler = { r in
+            requests += 1; XCTAssertEqual(r.httpMethod,"PUT")
+            XCTAssertEqual(r.value(forHTTPHeaderField: "If-None-Match"),"*")
+            XCTAssertEqual(r.value(forHTTPHeaderField: "OC-Checksum"),"SHA1:a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd")
+            return (412,[:],Data())
+        }
+        do { _ = try await api.put(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: nil,progress: Progress()); XCTFail("Expected collision") } catch SyncError.conflict {}
+        XCTAssertEqual(requests,1)
+        StubProtocol.handler = { r in
+            XCTAssertEqual(r.value(forHTTPHeaderField: "If-Match"),"\"v1\""); XCTAssertNil(r.value(forHTTPHeaderField: "If-None-Match"))
+            return (412,[:],Data())
+        }
+        do { _ = try await api.put(parent: cloud("root",[],directory: true),name: "data.bin",contents: url,replacing: cloud("file",["data.bin"]),progress: Progress()); XCTFail("Expected stale update") } catch SyncError.conflict {}
+    }
+    func testCreateSharingLinksForFilesAndSpaceRootsUsesLibreGraph() async throws {
+        let api = OpenCloudAPI(serverURL: URL(string: "https://cloud.example")!,username: "alice",token: { "token" },session: stubSession())
+        var paths: [String] = []
+        StubProtocol.handler = { r in
+            paths.append(r.url!.path); XCTAssertEqual(r.httpMethod,"POST")
+            let body = try JSONSerialization.jsonObject(with: r.httpBody!) as! [String:String]; XCTAssertEqual(body["type"],"view")
+            return (200,[:],Data("{\"link\":{\"webUrl\":\"https://cloud.example/s/example\"}}".utf8))
+        }
+        _ = try await api.createLink(cloud("file",["file.txt"])); _ = try await api.createLink(cloud("root",[],directory: true))
+        XCTAssertEqual(paths,["/graph/v1beta1/drives/storage$space/items/file/createLink","/graph/v1beta1/drives/storage$space/root/createLink"])
+    }
 }

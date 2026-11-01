@@ -12,6 +12,6 @@ The DMG contains `Immich Sync.app` and an Applications shortcut. Drag the app in
 
 On first launch, the app opens setup. After sign-in, it registers a Finder location and prompts you to enable the provider in System Settings. It restores a missing location and retries registration through domain-change notifications and periodic checks. Launching from the mounted DMG asks you to install the app first.
 
-For installation checks, confirm setup opens, sign in, enable File Providers, and check Finder shows one location. Quit/relaunch, disable/re-enable the provider, and verify an update reuses the account/domain. The local build has been checked by copying the app from the DMG to the user's Applications folder and launching it without registration utilities. Opening the System Settings action was exercised; its destination UI was not available to desktop automation.
+For installation checks, confirm setup opens, connect with an OpenCloud app token, enable File Providers, and check Finder shows one location. Quit/relaunch, disable/re-enable the provider, and verify an update reuses the account/domain. Run the signed smoke and manual checks in [integration testing](integration-testing.md); an unsigned build or local unit-test result does not verify a new DMG installation.
 
 This is an unnotarized developer build for local use. 
