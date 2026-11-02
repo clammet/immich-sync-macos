@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 /// Mutates only a UUID-named directory on an explicitly enabled disposable loopback server.
 final class LiveIntegrationTests: XCTestCase {

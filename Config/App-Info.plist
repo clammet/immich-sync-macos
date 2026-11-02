@@ -22,19 +22,19 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>Immich Sync sign-in</string>
+			<string>OpenCloud Sync sign-in</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>immich-sync</string>
+				<string>opencloud-sync</string>
 			</array>
 		</dict>
 	</array>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Immich Sync contributors</string>
-	<key>ImmichAppGroup</key>
-	<string>$(IMMICH_APP_GROUP)</string>
+	<string>OpenCloud Sync contributors</string>
+	<key>OpenCloudAppGroup</key>
+	<string>$(OPENCLOUD_APP_GROUP)</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>OpenCloud Sync connects to OpenCloud for files and optionally Immich for media actions on the local network.</string>
 	<key>NSAppTransportSecurity</key>

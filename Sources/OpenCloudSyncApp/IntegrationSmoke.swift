@@ -3,7 +3,7 @@ import AppKit
 import CryptoKit
 import FileProvider
 import Foundation
-import ImmichCore
+import OpenCloudCore
 
 /// Runs only in the separately signed integration bundle, against the disposable loopback server.
 @MainActor enum IntegrationSmoke {

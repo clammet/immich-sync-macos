@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "ImmichSync",
+    name: "OpenCloudSync",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "ImmichCore", targets: ["ImmichCore"]),
-        .library(name: "ImmichFileProvider", targets: ["ImmichFileProvider"]),
-        .executable(name: "ImmichSync", targets: ["ImmichSyncApp"])
+        .library(name: "OpenCloudCore", targets: ["OpenCloudCore"]),
+        .library(name: "OpenCloudFileProvider", targets: ["OpenCloudFileProvider"]),
+        .executable(name: "OpenCloudSync", targets: ["OpenCloudSyncApp"])
     ],
     targets: [
         .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3"),
-        .target(name: "ImmichCore", dependencies: ["CSQLite"]),
-        .target(name: "ImmichFileProvider", dependencies: ["ImmichCore"]),
-        .executableTarget(name: "ImmichSyncApp", dependencies: ["ImmichCore"]),
-        .testTarget(name: "ImmichCoreTests", dependencies: ["ImmichCore", "ImmichFileProvider"]),
-        .testTarget(name: "LiveIntegrationTests", dependencies: ["ImmichCore"], resources: [.copy("Fixtures")])
+        .target(name: "OpenCloudCore", dependencies: ["CSQLite"]),
+        .target(name: "OpenCloudFileProvider", dependencies: ["OpenCloudCore"]),
+        .executableTarget(name: "OpenCloudSyncApp", dependencies: ["OpenCloudCore"]),
+        .testTarget(name: "OpenCloudCoreTests", dependencies: ["OpenCloudCore", "OpenCloudFileProvider"]),
+        .testTarget(name: "LiveIntegrationTests", dependencies: ["OpenCloudCore"], resources: [.copy("Fixtures")])
     ]
 )

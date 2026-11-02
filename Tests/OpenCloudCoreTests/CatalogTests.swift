@@ -1,7 +1,7 @@
 import FileProvider
 import XCTest
-@testable import ImmichCore
-import ImmichFileProvider
+@testable import OpenCloudCore
+import OpenCloudFileProvider
 
 final class CatalogTests: CatalogTestCase {
     func testNamesOnlyDisambiguateRealCaseAndUnicodeCollisions() throws {

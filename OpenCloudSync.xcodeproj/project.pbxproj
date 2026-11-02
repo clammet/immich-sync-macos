@@ -11,52 +11,58 @@
 			"path" = "Config/Base.xcconfig";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"F834DDFE643DAF6A79D613AC" = {
+		"69B61E955ED194C6037E7659" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichSyncApp/BrowserSignIn.swift";
+			"path" = "Sources/OpenCloudSyncApp/BrowserSignIn.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"B1D4DE47BD7B23328E6B889F" = {
+		"DB0AD773F85C42C825E98F07" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichSyncApp/ImmichSyncApp.swift";
+			"path" = "Sources/OpenCloudSyncApp/IntegrationSmoke.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"BF30E8629D9CF6ACD8D0F45E" = {
+		"F4C3416D99FF3465097FF0C1" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichSyncApp/IntegrationSmoke.swift";
+			"path" = "Sources/OpenCloudSyncApp/OpenCloudSyncApp.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"9A0A5F26579B9844E89BEC72" = {
+		"369CD6FED353BE2AC736738F" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichFileProvider/FileProviderExtension.swift";
+			"path" = "Sources/OpenCloudFileProvider/FileProviderExtension.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"EA4D78EFCFA9D956B8C092F2" = {
+		"3B1A0082662CDD6BC8110C19" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichFileProvider/ProviderContext.swift";
+			"path" = "Sources/OpenCloudFileProvider/ProviderContext.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"13321CFE102D35F97F749D97" = {
+		"CE0105510B578C15D8061C97" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichFileProvider/ProviderEnumerator.swift";
+			"path" = "Sources/OpenCloudFileProvider/ProviderEnumerator.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
-		"1A80B027D4BD7C121A022FFF" = {
+		"130E399F89B025D264DD416E" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
-			"path" = "Sources/ImmichFileProvider/ProviderItem.swift";
+			"path" = "Sources/OpenCloudFileProvider/ProviderItem.swift";
 			"sourceTree" = "SOURCE_ROOT";
 		};
 		"B9FB39E4FF33F3B0E1DC65BE" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "image.icns";
 			"path" = "Resources/IgnoredBadge.icns";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"5D7D671021AF32286567AD4E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"path" = "Resources/Lucide-LICENSE.txt";
 			"sourceTree" = "SOURCE_ROOT";
 		};
 		"582681C2EAE02B3F3D399C0C" = {
@@ -66,56 +72,56 @@
 		"4E783A9E10D2A8ABA38CD11C" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "wrapper.application";
-			"path" = "Immich Sync.app";
+			"path" = "OpenCloud Sync.app";
 			"sourceTree" = "BUILT_PRODUCTS_DIR";
 		};
 		"F3359894334AE5458E1EAF3D" = {
 			"isa" = "PBXFileReference";
 			"explicitFileType" = "wrapper.app-extension";
-			"path" = "ImmichFileProvider.appex";
+			"path" = "OpenCloudFileProvider.appex";
 			"sourceTree" = "BUILT_PRODUCTS_DIR";
 		};
-		"9A89BC682FA4D898D1497EA7" = {
+		"7F4845DB7C5A98D54A5899AC" = {
 			"isa" = "XCSwiftPackageProductDependency";
 			"package" = "582681C2EAE02B3F3D399C0C";
-			"productName" = "ImmichCore";
+			"productName" = "OpenCloudCore";
 		};
-		"62C553AD09BE78C2BB1DB595" = {
+		"4C7BF68446CB7AE733E3B61F" = {
 			"isa" = "PBXBuildFile";
-			"productRef" = "9A89BC682FA4D898D1497EA7";
+			"productRef" = "7F4845DB7C5A98D54A5899AC";
 		};
-		"47A0338C9F68A445B99E945D" = {
+		"63210354C30FC560C9110ADF" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "9A0A5F26579B9844E89BEC72";
+			"fileRef" = "369CD6FED353BE2AC736738F";
 		};
-		"77AC73518DC87ED2D39004CD" = {
+		"47F32A5F3FD638CDEF149194" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "EA4D78EFCFA9D956B8C092F2";
+			"fileRef" = "3B1A0082662CDD6BC8110C19";
 		};
-		"E604C3B758E67C498B05A4F3" = {
+		"8549E2A33CDC5D1D8FCADDA0" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "13321CFE102D35F97F749D97";
+			"fileRef" = "CE0105510B578C15D8061C97";
 		};
-		"97B9E092A137F8130CE3CFD3" = {
+		"BC5A885370B1A68C23D23E12" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "1A80B027D4BD7C121A022FFF";
+			"fileRef" = "130E399F89B025D264DD416E";
 		};
-		"CBB9AAF9B3AD57B3D7986966" = {
+		"9DB4AD595BF7F22F665FB9DB" = {
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
-				"47A0338C9F68A445B99E945D",
-				"77AC73518DC87ED2D39004CD",
-				"E604C3B758E67C498B05A4F3",
-				"97B9E092A137F8130CE3CFD3",
+				"63210354C30FC560C9110ADF",
+				"47F32A5F3FD638CDEF149194",
+				"8549E2A33CDC5D1D8FCADDA0",
+				"BC5A885370B1A68C23D23E12",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
-		"0A28C10FD62B2F254CDD7887" = {
+		"D94FB94503BEE6967E9E6E15" = {
 			"isa" = "PBXFrameworksBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
-				"62C553AD09BE78C2BB1DB595",
+				"4C7BF68446CB7AE733E3B61F",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -123,7 +129,7 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "B9FB39E4FF33F3B0E1DC65BE";
 		};
-		"1071D04B2D3B987AE690978D" = {
+		"3CF35BAA2D6ACFC6CB80E00D" = {
 			"isa" = "PBXResourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
@@ -131,14 +137,14 @@
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
-		"FB7E397DA4173D5E9CE892F7" = {
+		"01C693BA278234FC7F00D295" = {
 			"isa" = "XCBuildConfiguration";
 			"baseConfigurationReference" = "50778595AA221B068518C8A3";
 			"name" = "Debug";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "ImmichFileProvider";
-				"PRODUCT_MODULE_NAME" = "ImmichFileProvider";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "$(IMMICH_BUNDLE_PREFIX).FileProvider";
+				"PRODUCT_NAME" = "OpenCloudFileProvider";
+				"PRODUCT_MODULE_NAME" = "OpenCloudFileProvider";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "$(OPENCLOUD_BUNDLE_PREFIX).FileProvider";
 				"INFOPLIST_FILE" = "Config/Extension-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/Extension.entitlements";
 				"GENERATE_INFOPLIST_FILE" = "NO";
@@ -147,6 +153,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				"COPY_PHASE_STRIP" = "NO";
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"SKIP_INSTALL" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
@@ -154,14 +161,14 @@
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
-		"77B49A691E8B6533A6F5B967" = {
+		"17AA95FC08ADAF97E540F8E8" = {
 			"isa" = "XCBuildConfiguration";
 			"baseConfigurationReference" = "50778595AA221B068518C8A3";
 			"name" = "Release";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "ImmichFileProvider";
-				"PRODUCT_MODULE_NAME" = "ImmichFileProvider";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "$(IMMICH_BUNDLE_PREFIX).FileProvider";
+				"PRODUCT_NAME" = "OpenCloudFileProvider";
+				"PRODUCT_MODULE_NAME" = "OpenCloudFileProvider";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "$(OPENCLOUD_BUNDLE_PREFIX).FileProvider";
 				"INFOPLIST_FILE" = "Config/Extension-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/Extension.entitlements";
 				"GENERATE_INFOPLIST_FILE" = "NO";
@@ -170,95 +177,101 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				"COPY_PHASE_STRIP" = "NO";
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"SKIP_INSTALL" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
 				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
-		"78D634E8BEED8D12711109EE" = {
+		"6D1B1216A2751B28D860E8A6" = {
 			"isa" = "XCConfigurationList";
 			"buildConfigurations" = (
-				"FB7E397DA4173D5E9CE892F7",
-				"77B49A691E8B6533A6F5B967",
+				"01C693BA278234FC7F00D295",
+				"17AA95FC08ADAF97E540F8E8",
 			);
 			"defaultConfigurationIsVisible" = "0";
 			"defaultConfigurationName" = "Release";
 		};
-		"BE2F9B1A4FDB9A4EF92A8814" = {
+		"BD73307174E85E3B26E77663" = {
 			"isa" = "PBXNativeTarget";
-			"name" = "ImmichFileProvider";
-			"productName" = "ImmichFileProvider";
+			"name" = "OpenCloudFileProvider";
+			"productName" = "OpenCloudFileProvider";
 			"productReference" = "F3359894334AE5458E1EAF3D";
 			"productType" = "com.apple.product-type.app-extension";
-			"buildConfigurationList" = "78D634E8BEED8D12711109EE";
+			"buildConfigurationList" = "6D1B1216A2751B28D860E8A6";
 			"buildPhases" = (
-				"CBB9AAF9B3AD57B3D7986966",
-				"0A28C10FD62B2F254CDD7887",
-				"1071D04B2D3B987AE690978D",
+				"9DB4AD595BF7F22F665FB9DB",
+				"D94FB94503BEE6967E9E6E15",
+				"3CF35BAA2D6ACFC6CB80E00D",
 			);
 			"buildRules" = (
 			);
 			"dependencies" = (
 			);
 			"packageProductDependencies" = (
-				"9A89BC682FA4D898D1497EA7",
+				"7F4845DB7C5A98D54A5899AC",
 			);
 		};
-		"E06E3784738A751BBE55687A" = {
+		"2B19FFB5731D723D776D6FE0" = {
 			"isa" = "XCSwiftPackageProductDependency";
 			"package" = "582681C2EAE02B3F3D399C0C";
-			"productName" = "ImmichCore";
+			"productName" = "OpenCloudCore";
 		};
-		"11CF06944C84FB80B988E9A4" = {
+		"E984D6BA4DA51466E5E0D944" = {
 			"isa" = "PBXBuildFile";
-			"productRef" = "E06E3784738A751BBE55687A";
+			"productRef" = "2B19FFB5731D723D776D6FE0";
 		};
-		"8FCED4268457A0A0CBAFCD41" = {
+		"2253AC61D03EFD8B1AB2D67E" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "F834DDFE643DAF6A79D613AC";
+			"fileRef" = "69B61E955ED194C6037E7659";
 		};
-		"51A133334C1AE57694ED3099" = {
+		"6B54EEC817B5F5A3B395E5B5" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "B1D4DE47BD7B23328E6B889F";
+			"fileRef" = "DB0AD773F85C42C825E98F07";
 		};
-		"6C79045B1ACFD4317F94205D" = {
+		"679141F5526F0E2A2945BF5C" = {
 			"isa" = "PBXBuildFile";
-			"fileRef" = "BF30E8629D9CF6ACD8D0F45E";
+			"fileRef" = "F4C3416D99FF3465097FF0C1";
 		};
-		"529CD44801B00481A08F29A3" = {
+		"A4D9FF5C23726D4D3AFFE022" = {
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
-				"8FCED4268457A0A0CBAFCD41",
-				"51A133334C1AE57694ED3099",
-				"6C79045B1ACFD4317F94205D",
+				"2253AC61D03EFD8B1AB2D67E",
+				"6B54EEC817B5F5A3B395E5B5",
+				"679141F5526F0E2A2945BF5C",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
-		"E26AA9FB542B0E3E9FB73B12" = {
+		"F8CAD7511811F689B86CE965" = {
 			"isa" = "PBXFrameworksBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
-				"11CF06944C84FB80B988E9A4",
+				"E984D6BA4DA51466E5E0D944",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
-		"55F54B74E76425DD5B0637BA" = {
+		"F374A74DFF77123A5309C519" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "5D7D671021AF32286567AD4E";
+		};
+		"BA4BC363E996F62BBF59769F" = {
 			"isa" = "PBXResourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"F374A74DFF77123A5309C519",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
-		"B353BACE56F76BD4A9EB9381" = {
+		"FF063288B4ECFC2BDAB54875" = {
 			"isa" = "XCBuildConfiguration";
 			"baseConfigurationReference" = "50778595AA221B068518C8A3";
 			"name" = "Debug";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "Immich Sync";
-				"PRODUCT_MODULE_NAME" = "ImmichSyncApp";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "$(IMMICH_BUNDLE_PREFIX)";
+				"PRODUCT_NAME" = "OpenCloud Sync";
+				"PRODUCT_MODULE_NAME" = "OpenCloudSyncApp";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "$(OPENCLOUD_BUNDLE_PREFIX)";
 				"INFOPLIST_FILE" = "Config/App-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/App.entitlements";
 				"GENERATE_INFOPLIST_FILE" = "NO";
@@ -267,19 +280,20 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				"COPY_PHASE_STRIP" = "NO";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
 				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
-		"E3EA239422AB69FA3D9A8939" = {
+		"E3E8B590A06AAFD94C3BEB75" = {
 			"isa" = "XCBuildConfiguration";
 			"baseConfigurationReference" = "50778595AA221B068518C8A3";
 			"name" = "Release";
 			"buildSettings" = {
-				"PRODUCT_NAME" = "Immich Sync";
-				"PRODUCT_MODULE_NAME" = "ImmichSyncApp";
-				"PRODUCT_BUNDLE_IDENTIFIER" = "$(IMMICH_BUNDLE_PREFIX)";
+				"PRODUCT_NAME" = "OpenCloud Sync";
+				"PRODUCT_MODULE_NAME" = "OpenCloudSyncApp";
+				"PRODUCT_BUNDLE_IDENTIFIER" = "$(OPENCLOUD_BUNDLE_PREFIX)";
 				"INFOPLIST_FILE" = "Config/App-Info.plist";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/App.entitlements";
 				"GENERATE_INFOPLIST_FILE" = "NO";
@@ -288,30 +302,31 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
+				"COPY_PHASE_STRIP" = "NO";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
 				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
-		"C3A4610EB8BA32C0735057EB" = {
+		"2DE47A61B57F7CEEFD93CB96" = {
 			"isa" = "XCConfigurationList";
 			"buildConfigurations" = (
-				"B353BACE56F76BD4A9EB9381",
-				"E3EA239422AB69FA3D9A8939",
+				"FF063288B4ECFC2BDAB54875",
+				"E3E8B590A06AAFD94C3BEB75",
 			);
 			"defaultConfigurationIsVisible" = "0";
 			"defaultConfigurationName" = "Release";
 		};
-		"A7B373B4F4A4CDA935720A91" = {
+		"278AD190CA2FE8510BF8E72F" = {
 			"isa" = "PBXNativeTarget";
-			"name" = "ImmichSync";
-			"productName" = "ImmichSync";
+			"name" = "OpenCloudSync";
+			"productName" = "OpenCloudSync";
 			"productReference" = "4E783A9E10D2A8ABA38CD11C";
 			"productType" = "com.apple.product-type.application";
-			"buildConfigurationList" = "C3A4610EB8BA32C0735057EB";
+			"buildConfigurationList" = "2DE47A61B57F7CEEFD93CB96";
 			"buildPhases" = (
-				"529CD44801B00481A08F29A3",
-				"E26AA9FB542B0E3E9FB73B12",
-				"55F54B74E76425DD5B0637BA",
+				"A4D9FF5C23726D4D3AFFE022",
+				"F8CAD7511811F689B86CE965",
+				"BA4BC363E996F62BBF59769F",
 				"36A5B7C0F10AEAA4D412D605",
 			);
 			"buildRules" = (
@@ -320,19 +335,19 @@
 				"662BF4F93A2D67AA51A63B4D",
 			);
 			"packageProductDependencies" = (
-				"E06E3784738A751BBE55687A",
+				"2B19FFB5731D723D776D6FE0",
 			);
 		};
 		"BCA370FA075707723D529BC1" = {
 			"isa" = "PBXContainerItemProxy";
 			"containerPortal" = "98F54143AB4E86B28C3AFEE0";
 			"proxyType" = "1";
-			"remoteGlobalIDString" = "BE2F9B1A4FDB9A4EF92A8814";
-			"remoteInfo" = "ImmichFileProvider";
+			"remoteGlobalIDString" = "BD73307174E85E3B26E77663";
+			"remoteInfo" = "OpenCloudFileProvider";
 		};
 		"662BF4F93A2D67AA51A63B4D" = {
 			"isa" = "PBXTargetDependency";
-			"target" = "BE2F9B1A4FDB9A4EF92A8814";
+			"target" = "BD73307174E85E3B26E77663";
 			"targetProxy" = "BCA370FA075707723D529BC1";
 		};
 		"054FB4281826BBBEAF5B7C52" = {
@@ -368,13 +383,13 @@
 			"isa" = "PBXGroup";
 			"name" = "Sources";
 			"children" = (
-				"F834DDFE643DAF6A79D613AC",
-				"B1D4DE47BD7B23328E6B889F",
-				"BF30E8629D9CF6ACD8D0F45E",
-				"9A0A5F26579B9844E89BEC72",
-				"EA4D78EFCFA9D956B8C092F2",
-				"13321CFE102D35F97F749D97",
-				"1A80B027D4BD7C121A022FFF",
+				"69B61E955ED194C6037E7659",
+				"DB0AD773F85C42C825E98F07",
+				"F4C3416D99FF3465097FF0C1",
+				"369CD6FED353BE2AC736738F",
+				"3B1A0082662CDD6BC8110C19",
+				"CE0105510B578C15D8061C97",
+				"130E399F89B025D264DD416E",
 			);
 			"sourceTree" = "<group>";
 		};
@@ -420,6 +435,7 @@
 				"BCE16DD0260827ECF338C787",
 				"DFBA7AADE0868074C2861C98",
 				"B9FB39E4FF33F3B0E1DC65BE",
+				"5D7D671021AF32286567AD4E",
 				"FBDC4F23F93125BBEEAE800C",
 			);
 			"sourceTree" = "<group>";
@@ -475,8 +491,8 @@
 			"projectDirPath" = "";
 			"projectRoot" = "";
 			"targets" = (
-				"A7B373B4F4A4CDA935720A91",
-				"BE2F9B1A4FDB9A4EF92A8814",
+				"278AD190CA2FE8510BF8E72F",
+				"BD73307174E85E3B26E77663",
 			);
 			"packageReferences" = (
 				"582681C2EAE02B3F3D399C0C",

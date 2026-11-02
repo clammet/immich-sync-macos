@@ -1,7 +1,7 @@
 import Foundation
 
 public enum SharedStore {
-    public static var groupID: String { Bundle.main.object(forInfoDictionaryKey: "ImmichAppGroup") as? String ?? "" }
+    public static var groupID: String { Bundle.main.object(forInfoDictionaryKey: "OpenCloudAppGroup") as? String ?? "" }
     public static var directory: URL {
         get throws {
             guard !groupID.isEmpty, !groupID.contains("$("),

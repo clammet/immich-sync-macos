@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 /// Only the container runner enables these tests. Each test owns one disposable
 /// remote directory and independent on-disk catalogs, with no OS provider setup.

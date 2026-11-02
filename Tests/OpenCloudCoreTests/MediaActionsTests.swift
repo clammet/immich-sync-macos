@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 actor MediaServer: ImmichMediaRemote {
     var assets: [String:[IndexedAsset]] = [:]
@@ -129,8 +129,8 @@ final class MediaActionsTests: CatalogTestCase {
     }
     func testOAuthCallbackRequiresExactStateAndSingleCode() throws {
         let challenge = try OAuthChallenge()
-        XCTAssertNoThrow(try challenge.validate(URL(string: "immich-sync://oauth?state=\(challenge.state)&code=code")!))
-        for value in ["immich-sync://oauth?state=wrong&code=code","immich-sync://oauth?state=\(challenge.state)&code=a&code=b","immich-sync://oauth?state=\(challenge.state)&code=code#error"] {
+        XCTAssertNoThrow(try challenge.validate(URL(string: "opencloud-sync://oauth?state=\(challenge.state)&code=code")!))
+        for value in ["other-app://oauth?state=\(challenge.state)&code=code","opencloud-sync://oauth?state=wrong&code=code","opencloud-sync://oauth?state=\(challenge.state)&code=a&code=b","opencloud-sync://oauth?state=\(challenge.state)&code=code#error"] {
             XCTAssertThrowsError(try challenge.validate(URL(string: value)!))
         }
     }

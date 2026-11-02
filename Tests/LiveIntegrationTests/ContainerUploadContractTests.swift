@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 /// These are ordinary failing assertions, deliberately separate from functional
 /// E2E coverage. Raw PUT requests here reproduce #866's historical baseline;

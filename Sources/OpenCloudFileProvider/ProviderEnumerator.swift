@@ -1,6 +1,6 @@
 import FileProvider
 import Foundation
-import ImmichCore
+import OpenCloudCore
 
 final class ProviderEnumerator: NSObject, NSFileProviderEnumerator {
     let domain: NSFileProviderDomain

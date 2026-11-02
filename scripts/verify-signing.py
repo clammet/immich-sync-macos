@@ -16,14 +16,14 @@ def info(bundle):
 
 
 def verify(app):
-    provider = app / "Contents" / "PlugIns" / "ImmichFileProvider.appex"
+    provider = app / "Contents" / "PlugIns" / "OpenCloudFileProvider.appex"
     bundles = (app, provider)
     if not all(bundle.is_dir() for bundle in bundles):
-        raise ValueError("Expected Immich Sync.app with its embedded ImmichFileProvider.appex.")
+        raise ValueError("Expected OpenCloud Sync.app with its embedded OpenCloudFileProvider.appex.")
     if any(path.suffix in (".provisionprofile", ".mobileprovision") for path in app.rglob("*")):
         raise ValueError("The local build must not contain provisioning profiles.")
     codesign("--verify", "--deep", "--strict", app)
-    group = info(app).get("ImmichAppGroup")
+    group = info(app).get("OpenCloudAppGroup")
     if not isinstance(group, str):
         raise ValueError("The app is missing its App Group configuration.")
     expected = {
@@ -45,7 +45,7 @@ def verify(app):
         debugger_access = entitlements.pop("com.apple.security.get-task-allow", False)
         if not isinstance(debugger_access, bool) or entitlements != expected:
             raise ValueError(f"{bundle.name}: unexpected signed entitlements.")
-        if info(bundle).get("ImmichAppGroup") != group:
+        if info(bundle).get("OpenCloudAppGroup") != group:
             raise ValueError(f"{bundle.name}: App Group configuration differs between targets.")
     if len(teams) != 1:
         raise ValueError("App and provider must have matching signing Team IDs.")
@@ -55,7 +55,7 @@ def verify(app):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("app", type=Path, help="Path to the built Immich Sync.app")
+    parser.add_argument("app", type=Path, help="Path to the built OpenCloud Sync.app")
     args = parser.parse_args()
     try:
         verify(args.app)

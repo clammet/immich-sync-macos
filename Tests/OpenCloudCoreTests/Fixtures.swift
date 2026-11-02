@@ -1,5 +1,5 @@
 import Foundation
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 let testSpace = CloudSpace(id: "storage$space",name: "Personal",rootID: "storage$space!root",davURL: URL(string: "https://cloud.example/dav/spaces/storage$space/")!)
 func cloud(_ id: String,_ path: [String],directory: Bool = false,etag: String = "v1",checksum: String? = nil) -> CloudFile {

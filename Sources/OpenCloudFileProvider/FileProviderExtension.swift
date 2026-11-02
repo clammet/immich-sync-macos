@@ -1,8 +1,15 @@
 import FileProvider
 import Foundation
-import ImmichCore
+import OpenCloudCore
 
-@objc(ImmichFileProviderExtension)
+// File Provider callbacks support background invocation, but the SDK does not mark them
+// @Sendable. Keep that unchecked contract at the callback boundary; task inputs are values.
+private struct ProviderCallback<Handler>: @unchecked Sendable {
+    let handler: Handler
+    init(_ handler: Handler) { self.handler = handler }
+}
+
+@objc(OpenCloudFileProviderExtension)
 public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension, NSFileProviderCustomAction, NSFileProviderThumbnailing {
     private let domain: NSFileProviderDomain
     private var contextResult: Result<ProviderContext, Error> { Result { try ProviderRegistry.context(for: domain) } }
@@ -18,7 +25,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         catch { throw ProviderErrors.map(error) }
     }
 
-    private func run(context: ProviderContext, _ work: @escaping (ProviderContext, Progress) async -> Void) -> Progress {
+    private func run(context: ProviderContext, _ work: @escaping @Sendable (ProviderContext, Progress) async -> Void) -> Progress {
         let progress = Progress(totalUnitCount: 100)
         let task = Task {
             await work(context, progress)
@@ -43,11 +50,13 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
             completionHandler(nil, nil, ProviderErrors.map(SyncError.missingAccount))
             return Progress(totalUnitCount: 0)
         }
+        let contentVersion = requestedVersion?.contentVersion
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             do {
-                let result = try await context.engine.download(id: ProviderItem.id(itemIdentifier), directory: context.manager.temporaryDirectoryURL(), progress: progress, requestedVersion: requestedVersion?.contentVersion)
-                completionHandler(result.0, try context.item(result.1), nil)
-            } catch { context.recordError(error); completionHandler(nil, nil, ProviderErrors.map(error, identifier: itemIdentifier)) }
+                let result = try await context.engine.download(id: ProviderItem.id(itemIdentifier), directory: context.manager.temporaryDirectoryURL(), progress: progress, requestedVersion: contentVersion)
+                completion.handler(result.0, try context.item(result.1), nil)
+            } catch { context.recordError(error); completion.handler(nil, nil, ProviderErrors.map(error, identifier: itemIdentifier)) }
         }
     }
 
@@ -57,15 +66,21 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         guard case .success(let context) = contextResult else {
             completionHandler(nil, [], false, ProviderErrors.map(SyncError.missingAccount)); return Progress(totalUnitCount: 0)
         }
+        let contentType = itemTemplate.contentType
+        // Packages and symlinks require semantics this WebDAV client does not implement.
+        let supported = (contentType == .folder || contentType?.conforms(to: .data) == true)
+            && contentType != .symbolicLink && contentType?.conforms(to: .package) != true
+        let parentID = ProviderItem.id(itemTemplate.parentItemIdentifier)
+        let filename = itemTemplate.filename
+        let directory = contentType == .folder
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             do {
-                // Packages and symlinks require semantics this WebDAV client does not implement.
-                guard itemTemplate.contentType == .folder || itemTemplate.contentType?.conforms(to: .data) == true,
-                      itemTemplate.contentType != .symbolicLink, itemTemplate.contentType?.conforms(to: .package) != true else { throw SyncError.unsupported }
-                let item = try await context.engine.create(parentID: ProviderItem.id(itemTemplate.parentItemIdentifier),
-                    filename: itemTemplate.filename, directory: itemTemplate.contentType == .folder, contents: url, progress: progress)
-                context.signal(); completionHandler(try context.item(item), [], false, nil)
-            } catch { context.recordError(error); completionHandler(nil, [], false, ProviderErrors.map(error, newImport: true)) }
+                guard supported else { throw SyncError.unsupported }
+                let item = try await context.engine.create(parentID: parentID,
+                    filename: filename, directory: directory, contents: url, progress: progress)
+                context.signal(); completion.handler(try context.item(item), [], false, nil)
+            } catch { context.recordError(error); completion.handler(nil, [], false, ProviderErrors.map(error, newImport: true)) }
         }
     }
 
@@ -76,15 +91,19 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
         guard case .success(let context) = contextResult else {
             completionHandler(nil, [], false, ProviderErrors.map(SyncError.missingAccount)); return Progress(totalUnitCount: 0)
         }
+        let id = ProviderItem.id(item.itemIdentifier)
+        let contentVersion = version.contentVersion
+        let filename = changedFields.contains(.filename) ? item.filename : nil
+        let parentID = changedFields.contains(.parentItemIdentifier) ? ProviderItem.id(item.parentItemIdentifier) : nil
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             do {
-                let updated = try await context.engine.modify(id: ProviderItem.id(item.itemIdentifier), baseContentVersion: version.contentVersion,
-                    filename: changedFields.contains(.filename) ? item.filename : nil,
-                    parentID: changedFields.contains(.parentItemIdentifier) ? ProviderItem.id(item.parentItemIdentifier) : nil,
+                let updated = try await context.engine.modify(id: id, baseContentVersion: contentVersion,
+                    filename: filename, parentID: parentID,
                     contents: newContents, progress: progress)
                 context.signal()
-                completionHandler(try context.item(updated), [], false, nil)
-            } catch { context.recordError(error); completionHandler(nil, [], false, ProviderErrors.map(error)) }
+                completion.handler(try context.item(updated), [], false, nil)
+            } catch { context.recordError(error); completion.handler(nil, [], false, ProviderErrors.map(error)) }
         }
     }
 
@@ -92,11 +111,13 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                            options: NSFileProviderDeleteItemOptions, request: NSFileProviderRequest,
                            completionHandler: @escaping (Error?) -> Void) -> Progress {
         guard case .success(let context) = contextResult else { completionHandler(ProviderErrors.map(SyncError.missingAccount)); return Progress(totalUnitCount: 0) }
+        let contentVersion = version.contentVersion
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             do {
-                try await context.engine.delete(id: ProviderItem.id(identifier), baseContentVersion: version.contentVersion,
+                try await context.engine.delete(id: ProviderItem.id(identifier), baseContentVersion: contentVersion,
                     recursive: options.contains(.recursive))
-                context.signal(); completionHandler(nil)
+                context.signal(); completion.handler(nil)
             } catch {
                 context.recordError(error)
                 // Restore rejected deletions in Finder. Excluded imports have no catalog row and are a no-op above.
@@ -107,8 +128,8 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                 }
                 if reject, let record = try? context.engine.catalog.item(ProviderItem.id(identifier)),
                    let item = try? context.item(record) {
-                    completionHandler(NSError.fileProviderErrorForRejectedDeletion(of: item))
-                } else { completionHandler(ProviderErrors.map(error)) }
+                    completion.handler(NSError.fileProviderErrorForRejectedDeletion(of: item))
+                } else { completion.handler(ProviderErrors.map(error)) }
             }
         }
     }
@@ -121,21 +142,23 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
             for id in itemIdentifiers { perThumbnailCompletionHandler(id, nil, error) }
             completionHandler(error); return Progress(totalUnitCount: 0)
         }
+        let thumbnailCompletion = ProviderCallback(perThumbnailCompletionHandler)
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             progress.totalUnitCount = Int64(itemIdentifiers.count)
             for (index, id) in itemIdentifiers.enumerated() {
                 if Task.isCancelled {
                     let error = ProviderErrors.map(CancellationError())
-                    for remaining in itemIdentifiers.dropFirst(index) { perThumbnailCompletionHandler(remaining, nil, error) }
-                    completionHandler(error); return
+                    for remaining in itemIdentifiers.dropFirst(index) { thumbnailCompletion.handler(remaining, nil, error) }
+                    completion.handler(error); return
                 }
                 do {
                     let bytes = try await context.engine.thumbnail(id: ProviderItem.id(id), large: max(size.width, size.height) > 256)
-                    perThumbnailCompletionHandler(id, bytes, nil)
-                } catch { perThumbnailCompletionHandler(id, nil, ProviderErrors.map(error)) }
+                    thumbnailCompletion.handler(id, bytes, nil)
+                } catch { thumbnailCompletion.handler(id, nil, ProviderErrors.map(error)) }
                 progress.completedUnitCount += 1
             }
-            completionHandler(Task.isCancelled ? ProviderErrors.map(CancellationError()) : nil)
+            completion.handler(Task.isCancelled ? ProviderErrors.map(CancellationError()) : nil)
         }
     }
 
@@ -143,14 +166,13 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                               onItemsWithIdentifiers itemIdentifiers: [NSFileProviderItemIdentifier],
                               completionHandler: @escaping (Error?) -> Void) -> Progress {
         guard case .success(let context) = contextResult else { completionHandler(ProviderErrors.map(SyncError.missingAccount)); return Progress(totalUnitCount: 0) }
+        let completion = ProviderCallback(completionHandler)
         return run(context: context) { context, progress in
             do {
-                if actionIdentifier.rawValue.hasPrefix("app.opencloud.") {
-                    try context.engine.catalog.setState("actionResult",value: ActionResult(title: "Running Finder action…",urls: []))
-                }
                 let ids = itemIdentifiers.map(ProviderItem.id)
                 switch actionIdentifier.rawValue {
                 case "app.opencloud.sync.link", "app.opencloud.sync.sharing":
+                    try context.engine.catalog.setState("actionResult",value: ActionResult(title: "Running Finder action…",urls: []))
                     var urls: [URL] = []
                     for id in ids {
                         let url = try await actionIdentifier.rawValue.hasSuffix(".link") ? context.engine.createSharingLink(id: id) : context.engine.sharingPage(id: id)
@@ -159,6 +181,7 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                         try context.engine.catalog.setState("actionResult",value: ActionResult(title: "OpenCloud sharing",urls: urls))
                     }
                 case "app.opencloud.sync.immichAlbum", "app.opencloud.sync.immichLink":
+                    try context.engine.catalog.setState("actionResult",value: ActionResult(title: "Running Finder action…",urls: []))
                     guard let account = try SharedStore.immichAccount() else { throw SyncError.mediaMappingRequired }
                     let api = ImmichAPI(serverURL: account.serverURL,token: { try CredentialStore.read(for: account) },apiKey: account.credentialKind == "apiKey")
                     let mappings = try context.engine.catalog.mediaMappings(for: account)
@@ -169,19 +192,19 @@ public final class FileProviderExtension: NSObject, NSFileProviderReplicatedExte
                     for id in ids {
                         try Task.checkCancellation()
                         switch actionIdentifier.rawValue {
-                        case "app.immich.sync.keep": try context.engine.catalog.pin(id,value: true)
-                        case "app.immich.sync.automatic": try context.engine.catalog.pin(id,value: false)
-                        case "app.immich.sync.inherit": try context.engine.catalog.pin(id,value: nil)
+                        case "app.opencloud.sync.keep": try context.engine.catalog.pin(id,value: true)
+                        case "app.opencloud.sync.automatic": try context.engine.catalog.pin(id,value: false)
+                        case "app.opencloud.sync.inherit": try context.engine.catalog.pin(id,value: nil)
                         default: throw SyncError.unsupported
                         }
                     }
                 }
                 context.signal()
-                progress.completedUnitCount = 100; completionHandler(nil)
+                progress.completedUnitCount = 100; completion.handler(nil)
             } catch {
                 let partial = try? context.engine.catalog.state("actionResult",as: ActionResult.self)
                 try? context.engine.catalog.setState("actionResult",value: ActionResult(title: "Action failed: " + error.localizedDescription,urls: partial?.urls ?? []))
-                completionHandler(ProviderErrors.map(error))
+                completion.handler(ProviderErrors.map(error))
             }
         }
     }

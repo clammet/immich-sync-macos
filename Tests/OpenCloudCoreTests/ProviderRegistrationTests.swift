@@ -1,5 +1,5 @@
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 final class ProviderRegistrationTests: XCTestCase {
     private func account() -> Account {

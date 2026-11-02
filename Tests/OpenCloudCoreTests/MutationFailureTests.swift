@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 final class MutationFailureTests: CatalogTestCase {
     override func tearDownWithError() throws { StubProtocol.handler = nil; try super.tearDownWithError() }

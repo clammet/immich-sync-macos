@@ -25,7 +25,7 @@ Sharing actions are available in Settings and Finder's File Provider context men
 
 ## Optional Immich actions
 
-Connect Immich separately in Settings using a session (password/browser sign-in) or an API key. For browser sign-in register `immich-sync://oauth` with the identity provider's Immich OAuth client.
+Connect Immich separately in Settings using a session (password/browser sign-in) or an API key. For browser sign-in register `opencloud-sync://oauth` with the identity provider's Immich OAuth client.
 
 Use **Discover libraries and paths** to query library import roots, exclusions and sample indexed original paths. Library configuration can require administrator permissions; ordinary users can still inspect paths exposed by their accessible assets. These APIs do not establish which OpenCloud space backs an Immich container mount.
 
@@ -52,17 +52,17 @@ Disconnect uses preserve-downloaded-user-data mode. Recovery remains on disk. Re
 
 ## Build and validation
 
-The package and build targets use the `ImmichSync`/`ImmichCore` names; the user-visible product is OpenCloud Sync.
+The Swift package and app scheme are `OpenCloudSync`, with `OpenCloudCore` and `OpenCloudFileProvider` library targets. The app bundle is `OpenCloud Sync.app`.
 
 1. Select full Xcode as the active developer toolchain.
 2. Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and set your development team and unique bundle identifier.
-3. Build the **ImmichSync** scheme in `ImmichSync.xcodeproj`.
+3. Build the **OpenCloudSync** scheme in `OpenCloudSync.xcodeproj`.
 4. Install the resulting app in Applications.
 
 ```sh
 sh scripts/check.sh
 python3 scripts/container-e2e.py
-python3 scripts/build-dmg.py --team YOUR_TEAM_ID
+python3 scripts/build-dmg.py
 ```
 
 See [architecture](docs/architecture.md), [integration testing](docs/integration-testing.md), and [distribution](docs/distribution.md).

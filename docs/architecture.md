@@ -6,7 +6,7 @@ OpenCloud is authoritative for file identities, directory structure, bytes, revi
 | --- | --- |
 | Menu bar app | OpenCloud app-token setup, optional Immich setup/mappings, sharing/media actions, recovery, sync controls |
 | File Provider extension | Cached enumeration, conditional downloads/mutations, native availability policies, Finder actions |
-| ImmichCore | OpenCloud WebDAV/TUS/Libre Graph, SQLite catalog, recovery journal, separate Immich media-action client |
+| OpenCloudCore | OpenCloud WebDAV/TUS/Libre Graph, SQLite catalog, recovery journal, separate Immich media-action client |
 
 ## Authentication and separation
 

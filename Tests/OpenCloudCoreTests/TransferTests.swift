@@ -1,7 +1,7 @@
 import Foundation
 import Network
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 /// A loopback HTTP peer tests URLSession's real disk-backed transfer and redirect behavior.
 private final class HTTPPeer: @unchecked Sendable {

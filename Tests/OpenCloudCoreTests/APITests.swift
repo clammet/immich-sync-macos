@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 final class StubProtocol: URLProtocol, @unchecked Sendable {
     static var handler: ((URLRequest) throws -> (Int,[String:String],Data))?

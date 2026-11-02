@@ -66,7 +66,7 @@ def main():
         parser.error("--timeout must be positive")
     subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, check=True)
     subprocess.run(["docker", "compose", "version"], check=True)
-    project = "immich-sync-e2e-" + uuid.uuid4().hex[:12]
+    project = "opencloud-sync-e2e-" + uuid.uuid4().hex[:12]
     artifacts = args.artifacts.resolve() / project
     artifacts.mkdir(parents=True)
     password = secrets.token_urlsafe(32)

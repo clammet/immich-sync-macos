@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 final class CredentialStoreTests: XCTestCase {
     private var root: URL!

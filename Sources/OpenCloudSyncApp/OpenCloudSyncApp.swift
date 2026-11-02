@@ -1,28 +1,82 @@
 import AppKit
+import Combine
 import FileProvider
-import ImmichCore
+import OpenCloudCore
 import ServiceManagement
 import SwiftUI
 
 @main
-struct ImmichSyncApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = AppModel.shared
-    var body: some Scene {
-        MenuBarExtra {
-            MenuPanel(model: model)
-        } label: {
-            Label("OpenCloud Sync", systemImage: model.account?.paused == true ? "pause.circle" : "cloud")
+struct OpenCloudSyncApp {
+    @MainActor static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.setActivationPolicy(.accessory)
+        application.delegate = delegate
+        let menu = NSMenu()
+        let appMenu = NSMenu(title: "OpenCloud Sync")
+        appMenu.addItem(withTitle: "Quit OpenCloud Sync", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: appMenu.title, action: nil, keyEquivalent: "").submenu = appMenu
+        let editMenu = NSMenu(title: "Edit")
+        for (title, action, key) in [
+            ("Undo", "undo:", "z"), ("Redo", "redo:", "Z"),
+            ("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")
+        ] {
+            editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
-        .menuBarExtraStyle(.window)
-
+        menu.addItem(withTitle: editMenu.title, action: nil, keyEquivalent: "").submenu = editMenu
+        application.mainMenu = menu
+        withExtendedLifetime(delegate) {
+            application.run()
+        }
     }
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var accountObserver: AnyCancellable?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = item
+        if let button = item.button {
+            button.toolTip = "OpenCloud Sync"
+            button.setAccessibilityLabel("OpenCloud Sync")
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        let controller = NSHostingController(rootView: MenuPanel(model: AppModel.shared))
+        controller.sizingOptions = .preferredContentSize
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        accountObserver = AppModel.shared.$account.map { $0?.paused == true }.removeDuplicates().sink { [weak self] paused in
+            self?.statusItem?.button?.image = NSImage(systemSymbolName: paused ? "pause.circle" : "cloud",
+                                                     accessibilityDescription: "OpenCloud Sync")
+        }
         Task { await AppModel.shared.start() }
     }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            popover.performClose(nil)
+            let menu = NSMenu()
+            let quit = menu.addItem(withTitle: "Quit OpenCloud Sync", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            quit.target = NSApp
+            sender.highlight(true)
+            defer { sender.highlight(false) }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+        } else if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         Task { await AppModel.shared.refreshProvider() }
     }
@@ -514,9 +568,33 @@ private struct MenuPanel: View {
             Divider()
             HStack {
                 if model.account != nil { Button("OpenCloud on the web",action: model.openWeb) }
-                Spacer(); Button("Quit") { NSApplication.shared.terminate(nil) }
+                Spacer()
+                Button { NSApplication.shared.terminate(nil) } label: {
+                    LucidePowerIcon()
+                        .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .frame(width: 20, height: 20).padding(6)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .help("Quit OpenCloud Sync")
+                .accessibilityLabel("Quit OpenCloud Sync")
+                .keyboardShortcut("q")
             }.font(.caption)
         }.padding(20).frame(width: 380).task { model.readStatus() }
+    }
+}
+
+// Adapted from Lucide's power icon. See Resources/Lucide-LICENSE.txt.
+private struct LucidePowerIcon: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 12, y: 2))
+        path.addLine(to: CGPoint(x: 12, y: 12))
+        let offset = 9 / sqrt(2.0)
+        path.move(to: CGPoint(x: 12 + offset, y: 13 - offset))
+        path.addArc(center: CGPoint(x: 12, y: 13), radius: 9,
+                    startAngle: .degrees(-45), endAngle: .degrees(225), clockwise: false)
+        return path.applying(CGAffineTransform(scaleX: rect.width / 24, y: rect.height / 24))
     }
 }
 

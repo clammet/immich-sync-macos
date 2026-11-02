@@ -18,12 +18,13 @@ def ref(path, kind="sourcecode.swift"):
     return add("file:" + path, "PBXFileReference", lastKnownFileType=kind, path=path, sourceTree="SOURCE_ROOT")
 
 config = ref("Config/Base.xcconfig", "text.xcconfig")
-app_sources = [ref(str(p.relative_to(ROOT))) for p in sorted((ROOT / "Sources/ImmichSyncApp").glob("*.swift"))]
-ext_sources = [ref(str(p.relative_to(ROOT))) for p in sorted((ROOT / "Sources/ImmichFileProvider").glob("*.swift"))]
+app_sources = [ref(str(p.relative_to(ROOT))) for p in sorted((ROOT / "Sources/OpenCloudSyncApp").glob("*.swift"))]
+ext_sources = [ref(str(p.relative_to(ROOT))) for p in sorted((ROOT / "Sources/OpenCloudFileProvider").glob("*.swift"))]
 badge = ref("Resources/IgnoredBadge.icns", "image.icns")
+lucide_license = ref("Resources/Lucide-LICENSE.txt", "text")
 package = add("package", "XCLocalSwiftPackageReference", relativePath=".")
-app_product = add("app-product", "PBXFileReference", explicitFileType="wrapper.application", path="Immich Sync.app", sourceTree="BUILT_PRODUCTS_DIR")
-ext_product = add("ext-product", "PBXFileReference", explicitFileType="wrapper.app-extension", path="ImmichFileProvider.appex", sourceTree="BUILT_PRODUCTS_DIR")
+app_product = add("app-product", "PBXFileReference", explicitFileType="wrapper.application", path="OpenCloud Sync.app", sourceTree="BUILT_PRODUCTS_DIR")
+ext_product = add("ext-product", "PBXFileReference", explicitFileType="wrapper.app-extension", path="OpenCloudFileProvider.appex", sourceTree="BUILT_PRODUCTS_DIR")
 
 def configs(name, settings):
     values = []
@@ -36,27 +37,29 @@ def configs(name, settings):
     return add(name + "configs", "XCConfigurationList", buildConfigurations=values, defaultConfigurationIsVisible="0", defaultConfigurationName="Release")
 
 def target(name, sources, product, extension=False):
-    core = add(name + "core", "XCSwiftPackageProductDependency", package=package, productName="ImmichCore")
+    core = add(name + "core", "XCSwiftPackageProductDependency", package=package, productName="OpenCloudCore")
     core_link = add(name + "corelink", "PBXBuildFile", productRef=core)
     source_files = [add(name + source, "PBXBuildFile", fileRef=source) for source in sources]
     phase_sources = add(name + "sources", "PBXSourcesBuildPhase", buildActionMask="2147483647", files=source_files, runOnlyForDeploymentPostprocessing="0")
     phase_frameworks = add(name + "frameworks", "PBXFrameworksBuildPhase", buildActionMask="2147483647", files=[core_link], runOnlyForDeploymentPostprocessing="0")
-    resources = [add("badge-build", "PBXBuildFile", fileRef=badge)] if extension else []
+    resources = [add("badge-build", "PBXBuildFile", fileRef=badge)] if extension else [add("lucide-license-build", "PBXBuildFile", fileRef=lucide_license)]
     phase_resources = add(name + "resources", "PBXResourcesBuildPhase", buildActionMask="2147483647", files=resources, runOnlyForDeploymentPostprocessing="0")
-    settings = dict(PRODUCT_NAME="ImmichFileProvider" if extension else "Immich Sync", PRODUCT_MODULE_NAME="ImmichFileProvider" if extension else "ImmichSyncApp",
-        PRODUCT_BUNDLE_IDENTIFIER="$(IMMICH_BUNDLE_PREFIX).FileProvider" if extension else "$(IMMICH_BUNDLE_PREFIX)",
+    settings = dict(PRODUCT_NAME="OpenCloudFileProvider" if extension else "OpenCloud Sync", PRODUCT_MODULE_NAME="OpenCloudFileProvider" if extension else "OpenCloudSyncApp",
+        PRODUCT_BUNDLE_IDENTIFIER="$(OPENCLOUD_BUNDLE_PREFIX).FileProvider" if extension else "$(OPENCLOUD_BUNDLE_PREFIX)",
         INFOPLIST_FILE="Config/Extension-Info.plist" if extension else "Config/App-Info.plist",
         CODE_SIGN_ENTITLEMENTS="Config/Extension.entitlements" if extension else "Config/App.entitlements",
-        GENERATE_INFOPLIST_FILE="NO", LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@executable_path/../Frameworks", "@executable_path/../../../../Frameworks"])
+        GENERATE_INFOPLIST_FILE="NO", LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@executable_path/../Frameworks", "@executable_path/../../../../Frameworks"],
+        # The extension is signed before embedding; stripping the copy would invalidate its signature.
+        COPY_PHASE_STRIP="NO")
     if extension:
         settings.update(APPLICATION_EXTENSION_API_ONLY="YES", SKIP_INSTALL="YES")
     return add(name, "PBXNativeTarget", name=name, productName=name, productReference=product,
         productType="com.apple.product-type.app-extension" if extension else "com.apple.product-type.application",
         buildConfigurationList=configs(name, settings), buildPhases=[phase_sources, phase_frameworks, phase_resources], buildRules=[], dependencies=[], packageProductDependencies=[core])
 
-ext = target("ImmichFileProvider", ext_sources, ext_product, extension=True)
-app = target("ImmichSync", app_sources, app_product)
-proxy = add("ext-proxy", "PBXContainerItemProxy", containerPortal=key("project"), proxyType="1", remoteGlobalIDString=ext, remoteInfo="ImmichFileProvider")
+ext = target("OpenCloudFileProvider", ext_sources, ext_product, extension=True)
+app = target("OpenCloudSync", app_sources, app_product)
+proxy = add("ext-proxy", "PBXContainerItemProxy", containerPortal=key("project"), proxyType="1", remoteGlobalIDString=ext, remoteInfo="OpenCloudFileProvider")
 dependency = add("ext-dependency", "PBXTargetDependency", target=ext, targetProxy=proxy)
 embed = add("embed-ext-file", "PBXBuildFile", fileRef=ext_product, settings=dict(ATTRIBUTES=["RemoveHeadersOnCopy"]))
 embed_phase = add("embed-ext", "PBXCopyFilesBuildPhase", buildActionMask="2147483647", dstPath="", dstSubfolderSpec="13", files=[embed], name="Embed App Extensions", runOnlyForDeploymentPostprocessing="0")
@@ -65,7 +68,7 @@ objects[app]["buildPhases"].append(embed_phase)
 products = add("products", "PBXGroup", name="Products", children=[app_product, ext_product], sourceTree="<group>")
 source_group = add("sources", "PBXGroup", name="Sources", children=app_sources + ext_sources, sourceTree="<group>")
 config_group = add("config", "PBXGroup", name="Configuration", children=[config] + [ref("Config/" + p, "text.plist.xml") for p in ["App-Info.plist", "Extension-Info.plist", "App.entitlements", "Extension.entitlements"]], sourceTree="<group>")
-group = add("main", "PBXGroup", children=[source_group, config_group, badge, products], sourceTree="<group>")
+group = add("main", "PBXGroup", children=[source_group, config_group, badge, lucide_license, products], sourceTree="<group>")
 project = add("project", "PBXProject", attributes=dict(LastUpgradeCheck="1600", BuildIndependentTargetsInParallel="YES"),
     buildConfigurationList=configs("project", dict(SDKROOT="macosx", CLANG_ENABLE_MODULES="YES")), compatibilityVersion="Xcode 14.0",
     developmentRegion="en", hasScannedForEncodings="0", knownRegions=["en", "Base"], mainGroup=group, productRefGroup=products,
@@ -78,24 +81,24 @@ def render(value, level=0):
         return "(\n" + "".join("\t" * (level + 1) + render(v, level + 1) + ",\n" for v in value) + "\t" * level + ")"
     return json.dumps(value)
 
-folder = ROOT / "ImmichSync.xcodeproj"
+folder = ROOT / "OpenCloudSync.xcodeproj"
 folder.mkdir(exist_ok=True)
 (folder / "project.pbxproj").write_text("// !$*UTF8*$!\n" + render(dict(archiveVersion="1", classes={}, objectVersion="56", objects=objects, rootObject=project)) + "\n")
 scheme = folder / "xcshareddata/xcschemes"
 scheme.mkdir(parents=True, exist_ok=True)
-(scheme / "ImmichSync.xcscheme").write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+(scheme / "OpenCloudSync.xcscheme").write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme LastUpgradeVersion="1600" version="1.3">
  <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries>
   <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
-   <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{app}" BuildableName="Immich Sync.app" BlueprintName="ImmichSync" ReferencedContainer="container:ImmichSync.xcodeproj"/>
+   <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{app}" BuildableName="OpenCloud Sync.app" BlueprintName="OpenCloudSync" ReferencedContainer="container:OpenCloudSync.xcodeproj"/>
   </BuildActionEntry>
  </BuildActionEntries></BuildAction>
  <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
-  <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{app}" BuildableName="Immich Sync.app" BlueprintName="ImmichSync" ReferencedContainer="container:ImmichSync.xcodeproj"/></BuildableProductRunnable>
+  <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{app}" BuildableName="OpenCloud Sync.app" BlueprintName="OpenCloudSync" ReferencedContainer="container:OpenCloudSync.xcodeproj"/></BuildableProductRunnable>
  </LaunchAction>
  <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES"/>
  <AnalyzeAction buildConfiguration="Debug"/>
  <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
 </Scheme>
 ''')
-print("Generated ImmichSync.xcodeproj")
+print("Generated OpenCloudSync.xcodeproj")

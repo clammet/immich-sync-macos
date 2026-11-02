@@ -1,6 +1,6 @@
 import FileProvider
 import Foundation
-import ImmichCore
+import OpenCloudCore
 import UniformTypeIdentifiers
 
 public final class ProviderItem: NSObject, NSFileProviderItem {

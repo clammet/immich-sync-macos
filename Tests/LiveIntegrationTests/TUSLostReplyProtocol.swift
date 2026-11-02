@@ -1,5 +1,5 @@
 import Foundation
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 /// Forwards every request to the real container. The first accepted PATCH loses
 /// only its client response, exercising durable resumption after an uncertain ACK.

@@ -10,8 +10,8 @@ jobs:
           swift build
           swift test
       - name: Validate bundled application and extension
-        run: xcodebuild -project ImmichSync.xcodeproj -scheme ImmichSync -configuration Debug -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project OpenCloudSync.xcodeproj -scheme OpenCloudSync -configuration Debug -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build
       - name: Check generated project is current
         run: |
           python3 scripts/generate-project.py
-          git diff --exit-code -- ImmichSync.xcodeproj
+          git diff --exit-code -- OpenCloudSync.xcodeproj

@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import ImmichCore
+@testable import OpenCloudCore
 
 final class TUSUploaderTests: CatalogTestCase {
     private let digest = "a17c9aaa61e80a1bf71d0d850af4e5baa9800bbd"

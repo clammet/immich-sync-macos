@@ -1,5 +1,5 @@
 // Copy this file to Local.xcconfig and enter your Xcode signing Team ID.
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
 // Both targets use the same macOS Team-ID-prefixed App Group, without group provisioning.
-IMMICH_BUNDLE_PREFIX = com.yourname.immichsync
-IMMICH_APP_GROUP = $(DEVELOPMENT_TEAM).$(IMMICH_BUNDLE_PREFIX)
+OPENCLOUD_BUNDLE_PREFIX = com.yourname.opencloudsync
+OPENCLOUD_APP_GROUP = $(DEVELOPMENT_TEAM).$(OPENCLOUD_BUNDLE_PREFIX)

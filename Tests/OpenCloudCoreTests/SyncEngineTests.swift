@@ -1,8 +1,8 @@
 import FileProvider
 import Foundation
 import XCTest
-@testable import ImmichCore
-import ImmichFileProvider
+@testable import OpenCloudCore
+import OpenCloudFileProvider
 
 final class SyncEngineTests: CatalogTestCase {
     let root = cloud("root",[],directory: true)

@@ -3,7 +3,7 @@ import Foundation
 import Security
 
 public struct OAuthChallenge: Sendable {
-    public static let redirectURI = "immich-sync://oauth"
+    public static let redirectURI = "opencloud-sync://oauth"
     public let state: String
     public let verifier: String
     public var challenge: String { Self.base64URL(Data(SHA256.hash(data: Data(verifier.utf8)))) }
@@ -13,7 +13,7 @@ public struct OAuthChallenge: Sendable {
     }
     public func validate(_ callback: URL) throws {
         guard let components = URLComponents(url: callback, resolvingAgainstBaseURL: false),
-              components.scheme == "immich-sync", components.host == "oauth", components.path.isEmpty,
+              components.scheme == "opencloud-sync", components.host == "oauth", components.path.isEmpty,
               components.user == nil, components.password == nil, components.port == nil, components.fragment == nil,
               let query = components.queryItems,
               query.filter({ $0.name == "state" }).count == 1,

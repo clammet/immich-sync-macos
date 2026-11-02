@@ -1,6 +1,7 @@
 import FileProvider
 import Foundation
-import ImmichCore
+import OpenCloudCore
+import os
 
 final class ProviderContext: @unchecked Sendable {
     let engine: SyncEngine
@@ -53,10 +54,11 @@ final class ProviderContext: @unchecked Sendable {
 }
 
 enum ProviderRegistry {
-    static let lock = NSLock()
-    static var contexts: [String: ProviderContext] = [:]
+    // Keep the mutable registry inside its lock so every access is synchronized.
+    private static let storage = OSAllocatedUnfairLock(initialState: [String: ProviderContext]())
     static func context(for domain: NSFileProviderDomain) throws -> ProviderContext {
-        return try lock.withLock {
+        // The SDK domain is borrowed synchronously here; it never crosses into another task.
+        return try storage.withLockUnchecked { contexts in
             guard let account = try SharedStore.account() else { throw SyncError.missingAccount }
             let id = domain.identifier.rawValue
             if let existing = contexts[id], existing.sessionID == account.sessionID { return existing }
@@ -67,6 +69,7 @@ enum ProviderRegistry {
         }
     }
     static func invalidate(_ domain: NSFileProviderDomain) {
-        lock.withLock { contexts.removeValue(forKey: domain.identifier.rawValue)?.cancel() }
+        let id = domain.identifier.rawValue
+        storage.withLock { contexts in contexts.removeValue(forKey: id)?.cancel() }
     }
 }

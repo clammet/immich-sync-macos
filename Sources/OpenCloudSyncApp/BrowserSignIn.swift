@@ -7,7 +7,7 @@ import Foundation
 
     func authenticate(_ url: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "immich-sync") { [weak self] callback, error in
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "opencloud-sync") { [weak self] callback, error in
                 Task { @MainActor in
                     self?.session = nil
                     if let callback { continuation.resume(returning: callback) }
